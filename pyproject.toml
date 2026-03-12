@@ -1,0 +1,13 @@
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "decomposition-magician"
+version = "0.1.0"
+description = "Inspect PyTorch operator decomposition trees"
+requires-python = ">=3.10"
+dependencies = ["torch>=2.0"]
+
+[project.scripts]
+decomp-magician = "decomp_magician.__main__:main"
