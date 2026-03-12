@@ -83,6 +83,46 @@ class TestSummary:
         assert "1 op" in captured.out
 
 
+class TestColor:
+    def test_no_color_in_pipe(self, capsys):
+        """Non-tty output should have no ANSI codes."""
+        main(["addcmul", "--depth", "1"])
+        captured = capsys.readouterr()
+        assert "\033[" not in captured.out
+
+    def test_no_color_flag(self, capsys):
+        """--no-color should suppress ANSI codes even if tty."""
+        main(["addcmul", "--depth", "1", "--no-color"])
+        captured = capsys.readouterr()
+        assert "\033[" not in captured.out
+
+    def test_color_rendering(self):
+        """When color is on, output should contain ANSI codes."""
+        import decomp_magician.__main__ as m
+        old = m._use_color
+        try:
+            m._use_color = True
+            node = build_tree(torch.ops.aten.addcmul.default, depth=1)
+            output = format_tree(node)
+            assert "\033[" in output  # has ANSI codes
+            assert "\033[1m" in output  # bold for decomposable ops
+            assert "\033[33m" in output  # yellow for inductor-kept
+        finally:
+            m._use_color = old
+
+    def test_color_leaf_dim(self):
+        """Leaf ops should be dim when color is on."""
+        import decomp_magician.__main__ as m
+        old = m._use_color
+        try:
+            m._use_color = True
+            node = build_tree(torch.ops.aten.mm.default)
+            output = format_tree(node)
+            assert "\033[2m" in output  # dim for leaf
+        finally:
+            m._use_color = old
+
+
 class TestJson:
     def test_json_output(self, capsys):
         assert main(["addcmul", "--depth", "1", "--json"]) == 0

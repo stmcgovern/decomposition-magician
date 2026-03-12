@@ -4,10 +4,37 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 
 from decomp_magician.resolve import resolve_op
 from decomp_magician.tree import DecompNode, build_tree
+
+
+# ANSI color codes
+_RESET = "\033[0m"
+_BOLD = "\033[1m"
+_DIM = "\033[2m"
+_RED = "\033[31m"
+_GREEN = "\033[32m"
+_YELLOW = "\033[33m"
+
+# Whether color is currently enabled
+_use_color = False
+
+
+def _should_use_color() -> bool:
+    """Auto-detect color support: tty + no NO_COLOR env var."""
+    if os.environ.get("NO_COLOR") is not None:
+        return False
+    return hasattr(sys.stdout, "isatty") and sys.stdout.isatty()
+
+
+def _c(code: str, text: str) -> str:
+    """Apply ANSI color code if color is enabled."""
+    if _use_color:
+        return f"{code}{text}{_RESET}"
+    return text
 
 
 def format_tree(node: DecompNode, prefix: str = "", is_last: bool = True, is_root: bool = True) -> str:
@@ -18,12 +45,18 @@ def format_tree(node: DecompNode, prefix: str = "", is_last: bool = True, is_roo
     annotation = _format_annotation(node)
 
     # Build the line
+    op_name = _op_display_name(node.op)
+    if node.classification.decomp_type == "leaf":
+        op_name = _c(_DIM, op_name)
+    else:
+        op_name = _c(_BOLD, op_name)
+
     if is_root:
-        line = f"{_op_display_name(node.op)}  {annotation}"
+        line = f"{op_name}  {annotation}"
     else:
         connector = "└── " if is_last else "├── "
         count_str = f"  x{node.count}" if node.count > 1 else ""
-        line = f"{prefix}{connector}{_op_display_name(node.op)}  {annotation}{count_str}"
+        line = f"{prefix}{connector}{op_name}  {annotation}{count_str}"
 
     lines.append(line)
 
@@ -54,28 +87,28 @@ def _format_annotation(node: DecompNode) -> str:
     # Decomp type
     cls = node.classification
     if cls.decomp_type == "leaf":
-        parts.append("leaf")
+        parts.append(_c(_DIM, "leaf"))
     else:
         parts.append(cls.decomp_type)
 
     # Inductor exclusion
     if cls.inductor_excluded:
-        parts.append("inductor-kept")
+        parts.append(_c(_YELLOW, "inductor-kept"))
 
     # Traceability
     if not node.traceable:
-        parts.append("untraceable")
+        parts.append(_c(_RED, "untraceable"))
 
     annotation = f"[{', '.join(parts)}]"
 
     # DTensor strategy (outside brackets)
     if cls.dtensor_strategy is not None:
         if cls.dtensor_strategy == "registered":
-            annotation += "  dtensor: ok"
+            annotation += "  " + _c(_GREEN, "dtensor: ok")
         elif cls.dtensor_strategy == "decomp-fallback":
-            annotation += "  dtensor: ok (via decomp)"
+            annotation += "  " + _c(_GREEN, "dtensor: ok (via decomp)")
         elif cls.dtensor_strategy == "missing":
-            annotation += "  dtensor: MISSING"
+            annotation += "  " + _c(_RED, "dtensor: MISSING")
 
     return annotation
 
@@ -110,7 +143,19 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Output as JSON",
     )
+    parser.add_argument(
+        "--no-color",
+        action="store_true",
+        help="Disable colored output",
+    )
     args = parser.parse_args(argv)
+
+    # Initialize color
+    global _use_color
+    if args.no_color or args.json:
+        _use_color = False
+    else:
+        _use_color = _should_use_color()
 
     # Resolve the op name
     result = resolve_op(args.op)
@@ -176,11 +221,11 @@ def format_summary(node: DecompNode) -> str:
     parts = [f"{total} {ops_word} ({', '.join(type_parts)})"]
 
     if inductor_kept > 0:
-        parts.append(f"{inductor_kept} inductor-kept")
+        parts.append(_c(_YELLOW, f"{inductor_kept} inductor-kept"))
     if untraceable > 0:
-        parts.append(f"{untraceable} untraceable")
+        parts.append(_c(_RED, f"{untraceable} untraceable"))
     if dtensor_missing > 0:
-        parts.append(f"{dtensor_missing} dtensor missing")
+        parts.append(_c(_RED, f"{dtensor_missing} dtensor missing"))
 
     return " · ".join(parts)
 
