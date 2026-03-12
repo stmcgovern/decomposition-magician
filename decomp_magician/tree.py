@@ -223,6 +223,7 @@ def build_tree(
     op: OpOverload,
     depth: int = -1,
     dtensor: bool = False,
+    compile: bool = False,
     _ancestors: frozenset[str] | None = None,
 ) -> DecompNode:
     """Build a decomposition tree for the given op.
@@ -231,6 +232,7 @@ def build_tree(
         op: The operator to decompose.
         depth: Maximum recursion depth. -1 for unlimited.
         dtensor: If True, classify DTensor strategy coverage.
+        compile: If True, treat inductor-kept ops as leaves.
     """
     if _ancestors is None:
         _ancestors = frozenset()
@@ -242,6 +244,10 @@ def build_tree(
 
     # Leaf or depth exhausted — no children
     if node.classification.decomp_type == "leaf" or depth == 0:
+        return node
+
+    # In compile mode, inductor-kept ops are treated as leaves
+    if compile and node.classification.inductor_kept:
         return node
 
     # Cycle detection: if this op is already an ancestor, stop recursion
@@ -264,7 +270,8 @@ def build_tree(
 
     for child_op, count in op_counts.items():
         child = build_tree(
-            child_op, depth=next_depth, dtensor=dtensor, _ancestors=child_ancestors
+            child_op, depth=next_depth, dtensor=dtensor, compile=compile,
+            _ancestors=child_ancestors,
         )
         child.count = count
         node.children.append(child)

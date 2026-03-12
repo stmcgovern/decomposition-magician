@@ -69,22 +69,22 @@ class TestSchemaProperties:
         assert cls.has_alias_info is False
 
 
-class TestInductorExcluded:
+class TestInductorKept:
     def test_sum_excluded(self):
         op = torch.ops.aten.sum.dim_IntList
         cls = classify(op)
-        assert cls.inductor_excluded is True
+        assert cls.inductor_kept is True
 
     def test_add_not_excluded(self):
         op = torch.ops.aten.add.Tensor
         cls = classify(op)
-        assert cls.inductor_excluded is False
+        assert cls.inductor_kept is False
 
     def test_silu_not_excluded(self):
         """silu is in decomps_to_exclude but Inductor re-adds its own decomp."""
         op = torch.ops.aten.silu.default
         cls = classify(op)
-        assert cls.inductor_excluded is False
+        assert cls.inductor_kept is False
 
 
 class TestTags:

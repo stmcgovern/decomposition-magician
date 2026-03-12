@@ -92,7 +92,7 @@ def _format_annotation(node: DecompNode) -> str:
         parts.append(cls.decomp_type)
 
     # Inductor exclusion
-    if cls.inductor_excluded:
+    if cls.inductor_kept:
         parts.append(_c(_YELLOW, "inductor-kept"))
 
     # Traceability
@@ -134,6 +134,11 @@ def main(argv: list[str] | None = None) -> int:
         help="Show DTensor sharding strategy coverage",
     )
     parser.add_argument(
+        "--compile",
+        action="store_true",
+        help="Show what torch.compile produces (treat inductor-kept ops as leaves)",
+    )
+    parser.add_argument(
         "--verbose",
         action="store_true",
         help="Show full classification details per op",
@@ -172,7 +177,7 @@ def main(argv: list[str] | None = None) -> int:
     op = result
 
     # Build and print the tree
-    node = build_tree(op, depth=args.depth, dtensor=args.dtensor)
+    node = build_tree(op, depth=args.depth, dtensor=args.dtensor, compile=args.compile)
 
     if args.json:
         print(json.dumps(tree_to_dict(node), indent=2))
@@ -200,7 +205,7 @@ def format_summary(node: DecompNode) -> str:
         nonlocal inductor_kept, dtensor_missing, untraceable
         dt = n.classification.decomp_type
         counts[dt] = counts.get(dt, 0) + 1
-        if n.classification.inductor_excluded:
+        if n.classification.inductor_kept:
             inductor_kept += 1
         if n.classification.dtensor_strategy == "missing":
             dtensor_missing += 1
@@ -237,7 +242,7 @@ def tree_to_dict(node: DecompNode) -> dict:
         "op": _op_display_name(node.op),
         "decomp_type": cls.decomp_type,
         "count": node.count,
-        "inductor_kept": cls.inductor_excluded,
+        "inductor_kept": cls.inductor_kept,
         "backends": cls.has_backend,
         "tags": cls.tags,
         "mutable": cls.is_mutable,
@@ -272,7 +277,7 @@ def _print_verbose(node: DecompNode, indent: int = 0) -> None:
         print(f"{prefix}  mutable: True")
     if cls.has_alias_info:
         print(f"{prefix}  alias_info: True")
-    if cls.inductor_excluded:
+    if cls.inductor_kept:
         print(f"{prefix}  inductor_kept: True")
     if node.error:
         print(f"{prefix}  error: {node.error}")

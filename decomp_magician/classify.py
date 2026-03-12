@@ -15,7 +15,7 @@ class OpClass:
     tags: list[str] = field(default_factory=list)
     is_mutable: bool = False
     has_alias_info: bool = False
-    inductor_excluded: bool = False
+    inductor_kept: bool = False
     dtensor_strategy: str | None = None  # "registered", "decomp-fallback", "missing"
 
 
@@ -93,7 +93,7 @@ def classify(op: OpOverload, dtensor: bool = False) -> OpClass:
         has_alias_info=any(
             arg.alias_info is not None for arg in op._schema.arguments
         ),
-        inductor_excluded=op.name() in _build_inductor_kept(),
+        inductor_kept=op.name() in _build_inductor_kept(),
     )
     if dtensor:
         cls.dtensor_strategy = _get_dtensor_strategy(op)

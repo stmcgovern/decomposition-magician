@@ -114,3 +114,20 @@ class TestBuildTree:
         assert len(roll_children) == 1
         assert roll_children[0].traceable is False
         assert roll_children[0].error == "cycle detected"
+
+    def test_compile_stops_at_inductor_kept(self):
+        """--compile treats inductor-kept ops as leaves."""
+        op = torch.ops.aten._native_batch_norm_legit.default
+        normal = build_tree(op, depth=2)
+        compiled = build_tree(op, depth=2, compile=True)
+
+        def count_nodes(n):
+            return 1 + sum(count_nodes(c) for c in n.children)
+
+        # compile mode should have fewer nodes (inductor-kept ops not expanded)
+        assert count_nodes(compiled) < count_nodes(normal)
+
+        # inductor-kept ops should have no children in compile mode
+        for child in compiled.children:
+            if child.classification.inductor_kept:
+                assert len(child.children) == 0

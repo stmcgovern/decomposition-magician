@@ -29,6 +29,9 @@ class TestMain:
     def test_fully_qualified(self):
         assert main(["aten.addcmul.default"]) == 0
 
+    def test_compile_flag(self):
+        assert main(["_native_batch_norm_legit", "--compile"]) == 0
+
 
 class TestFormatTree:
     def test_leaf_format(self):
