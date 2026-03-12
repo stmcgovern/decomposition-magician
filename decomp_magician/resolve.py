@@ -84,8 +84,17 @@ def _try_packet(ns: str, opname: str) -> OpOverload | list[str] | None:
     if len(overloads) == 1:
         return getattr(packet, overloads[0])
 
-    # Multiple non-default overloads — ambiguous
-    return [f"{ns}.{opname}.{ol}" for ol in overloads]
+    # Filter out _out variants (write-to-preallocated-output) — never what users mean
+    primary = [ol for ol in overloads if not ol.endswith("_out") and ol != "out"]
+    if len(primary) == 1:
+        return getattr(packet, primary[0])
+
+    # Multiple non-default, non-out overloads — pick first, caller prints a note
+    if primary:
+        return getattr(packet, primary[0])
+
+    # Only _out overloads remain — use first
+    return getattr(packet, overloads[0])
 
 
 def _substring_search(query: str) -> list[str]:

@@ -80,11 +80,20 @@ _SMALL_SHAPE = [3]
 
 
 _SMALL_NAMES = ("weight", "bias", "mean", "var", "scale", "zero_point")
+_SCALAR_NAMES = ("value", "fill_value", "other")
+_INDEX_NAMES = ("indices", "index")
 
 
 def _make_meta_tensor(name: str) -> torch.Tensor:
     """Create a meta tensor with shape chosen by argument name heuristic."""
     name_lower = name.lower()
+    # Scalar tensors (0-D) for value-like args
+    if name_lower in _SCALAR_NAMES:
+        return torch.empty([], device="meta")
+    # Index tensors need int64 dtype
+    if name_lower in _INDEX_NAMES:
+        return torch.empty(_DEFAULT_SHAPE, device="meta", dtype=torch.int64)
+    # 1D for weight/bias/mean/var-like args
     if any(n in name_lower for n in _SMALL_NAMES):
         return torch.empty(_SMALL_SHAPE, device="meta")
     return torch.empty(_DEFAULT_SHAPE, device="meta")
@@ -103,13 +112,9 @@ def _make_arg(arg):
             return _make_meta_tensor(arg.name)
         if arg.default_value is not None:
             return arg.default_value
-        # Provide values for optional scalars instead of None,
-        # since decomps often require at least one to be non-None
-        elem = str(arg.type)
-        if "int" in elem:
-            return 0
-        if "float" in elem or "number" in elem:
-            return 1.0
+        # Most optional scalars should stay None (their schema default).
+        # Some ops (e.g. clamp) need at least one optional to be non-None —
+        # those are handled by the retry logic in _trace_decomp.
         return None
 
     if kind == "BoolType":
@@ -182,6 +187,22 @@ def _trace_decomp(op: OpOverload) -> list[OpOverload] | str:
     if isinstance(result, list):
         return result
 
+    # Retry with booleans flipped (e.g. _softmax's half_to_float=True
+    # asserts half input, but our default tensors are float32)
+    flipped = _flip_bools(args, kwargs)
+    if flipped is not None:
+        retry = _try_trace(decomp_fn, *flipped)
+        if isinstance(retry, list):
+            return retry
+
+    # Retry with optional scalars filled in (e.g. clamp(min=None, max=None)
+    # needs at least one non-None)
+    filled = _fill_optional_scalars(op, args, kwargs)
+    if filled is not None:
+        retry = _try_trace(decomp_fn, *filled)
+        if isinstance(retry, list):
+            return retry
+
     # Retry with integer dtype for ops that require integral tensors
     if "integral" in result or "int" in result.lower():
         int_args = [
@@ -196,6 +217,63 @@ def _trace_decomp(op: OpOverload) -> list[OpOverload] | str:
             return retry
 
     return result
+
+
+def _flip_bools(args: list, kwargs: dict) -> tuple[list, dict] | None:
+    """Flip all boolean args/kwargs. Returns (new_args, new_kwargs) or None if no bools."""
+    has_bool = False
+    new_args = []
+    for a in args:
+        if isinstance(a, bool):
+            new_args.append(not a)
+            has_bool = True
+        else:
+            new_args.append(a)
+    new_kwargs = {}
+    for k, v in kwargs.items():
+        if isinstance(v, bool):
+            new_kwargs[k] = not v
+            has_bool = True
+        else:
+            new_kwargs[k] = v
+    return (new_args, new_kwargs) if has_bool else None
+
+
+def _fill_optional_scalars(op: OpOverload, args: list, kwargs: dict) -> tuple[list, dict] | None:
+    """Fill None optional scalars with defaults. Returns (new_args, new_kwargs) or None if nothing changed."""
+    changed = False
+    new_args = list(args)
+    new_kwargs = dict(kwargs)
+    pos_idx = 0
+    for arg in op._schema.arguments:
+        if arg.type.kind() != "OptionalType":
+            if not arg.kwarg_only:
+                pos_idx += 1
+            continue
+        if "Tensor" in str(arg.type):
+            if not arg.kwarg_only:
+                pos_idx += 1
+            continue
+        elem = str(arg.type)
+        fill_val = None
+        if "int" in elem:
+            fill_val = 0
+        elif "float" in elem or "number" in elem:
+            fill_val = 1.0
+        if fill_val is None:
+            if not arg.kwarg_only:
+                pos_idx += 1
+            continue
+        if arg.kwarg_only:
+            if new_kwargs.get(arg.name) is None:
+                new_kwargs[arg.name] = fill_val
+                changed = True
+        else:
+            if pos_idx < len(new_args) and new_args[pos_idx] is None:
+                new_args[pos_idx] = fill_val
+                changed = True
+            pos_idx += 1
+    return (new_args, new_kwargs) if changed else None
 
 
 def _try_trace(decomp_fn, args, kwargs) -> list[OpOverload] | str:

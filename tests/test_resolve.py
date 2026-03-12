@@ -36,15 +36,15 @@ class TestDefaultOverload:
         assert result is torch.ops.aten.addcmul.default
 
     def test_no_default_overload(self):
-        # softmax has no .default — should return the single-or-list
+        # softmax has no .default — should pick the primary non-out overload
         result = resolve_op("aten.softmax")
-        if isinstance(result, OpOverload):
-            # If there's exactly one overload, that's fine
-            assert True
-        else:
-            # Multiple overloads, should be a list
-            assert isinstance(result, list)
-            assert any("softmax" in s for s in result)
+        assert isinstance(result, OpOverload)
+
+    def test_bare_name_no_default(self):
+        # "softmax" with no namespace should also resolve
+        result = resolve_op("softmax")
+        assert isinstance(result, OpOverload)
+        assert "softmax" in result.name()
 
 
 class TestNamespacePrefix:

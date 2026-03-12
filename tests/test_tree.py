@@ -115,6 +115,59 @@ class TestBuildTree:
         assert roll_children[0].traceable is False
         assert roll_children[0].error == "cycle detected"
 
+    def test_softmax_traces(self):
+        """softmax was previously untraceable due to half_to_float=True default."""
+        op = torch.ops.aten._softmax.default
+        node = build_tree(op, depth=1)
+        assert node.traceable is True
+        child_names = [c.op.name() for c in node.children]
+        assert "aten::exp" in child_names
+        assert "aten::div.Tensor" in child_names
+
+    def test_to_copy_traces(self):
+        """_to_copy was previously untraceable due to memory_format=0."""
+        op = torch.ops.aten._to_copy.default
+        node = build_tree(op, depth=1)
+        assert node.traceable is True
+        child_names = [c.op.name() for c in node.children]
+        assert "aten::clone" in child_names
+
+    def test_fill_traces(self):
+        """fill.Tensor needs a scalar (0-D) value tensor."""
+        op = torch.ops.aten.fill.Tensor
+        node = build_tree(op, depth=1)
+        assert node.traceable is True
+
+    def test_clamp_traces(self):
+        """clamp needs at least one of min/max to be non-None."""
+        op = torch.ops.aten.clamp.default
+        node = build_tree(op, depth=1)
+        assert node.traceable is True
+        assert len(node.children) > 0
+
+    def test_leaf_frontier_correctness(self):
+        """Verify the leaf frontier has correct propagated counts for addcmul.
+
+        addcmul(self, t1, t2, value) = self + value * (t1 * t2)
+        mul decomposes to prims.mul; add decomposes to prims.mul + prims.add + expand.
+        mul appears x2, so prims.mul from mul path = 2, plus 1 from add path = 3.
+        """
+        from collections import Counter
+        op = torch.ops.aten.addcmul.default
+        node = build_tree(op)
+
+        frontier: Counter[str] = Counter()
+        def walk(n, mult=1):
+            if not n.children:
+                frontier[n.op.name()] += mult
+                return
+            for c in n.children:
+                walk(c, mult * c.count)
+        walk(node)
+
+        assert frontier["prims::mul"] == 3  # 2 from mul.Tensor x2 + 1 from add.Tensor
+        assert frontier["prims::add"] == 1
+
     def test_compile_stops_at_inductor_kept(self):
         """--compile treats inductor-kept ops as leaves."""
         op = torch.ops.aten._native_batch_norm_legit.default

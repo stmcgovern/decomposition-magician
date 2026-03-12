@@ -102,6 +102,10 @@ def _format_annotation(node: DecompNode) -> str:
 
     annotation = f"[{', '.join(parts)}]"
 
+    # Show brief explanation for untraceable ops
+    if not node.traceable and node.classification.decomp_type != "leaf":
+        annotation += "  " + _c(_DIM, "(has decomposition, could not trace)")
+
     # DTensor strategy (outside brackets)
     if cls.dtensor_strategy is not None:
         if cls.dtensor_strategy == "registered":
@@ -181,6 +185,13 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     op = result
+
+    # Show which overload was selected when it's non-obvious
+    resolved_name = _op_display_name(op)
+    if not resolved_name.endswith(".default") and not args.json:
+        user_input = args.op.replace("::", ".")
+        if user_input.count(".") < 2:
+            print(f"(resolved to {resolved_name})", file=sys.stderr)
 
     # Build and print the tree
     node = build_tree(op, depth=args.depth, dtensor=args.dtensor, compile=args.compile)
