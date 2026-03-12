@@ -2,7 +2,7 @@
 
 import json
 
-from decomp_magician.__main__ import main, format_tree, tree_to_dict
+from decomp_magician.__main__ import main, format_tree, format_summary, tree_to_dict
 from decomp_magician.tree import build_tree
 
 import torch
@@ -62,6 +62,25 @@ class TestFormatTree:
         node = build_tree(op, depth=0)
         output = format_tree(node)
         assert "inductor-kept" in output
+
+
+class TestSummary:
+    def test_leaf_summary(self):
+        node = build_tree(torch.ops.aten.mm.default)
+        s = format_summary(node)
+        assert "1 op" in s
+        assert "1 leaf" in s
+
+    def test_batch_norm_summary(self):
+        node = build_tree(torch.ops.aten._native_batch_norm_legit.default, depth=1)
+        s = format_summary(node)
+        assert "9 ops" in s
+        assert "inductor-kept" in s
+
+    def test_summary_in_output(self, capsys):
+        main(["addcmul", "--depth", "0"])
+        captured = capsys.readouterr()
+        assert "1 op" in captured.out
 
 
 class TestJson:

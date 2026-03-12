@@ -134,12 +134,55 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     print(format_tree(node))
+    print()
+    print(format_summary(node))
 
     if args.verbose:
         print()
         _print_verbose(node)
 
     return 0
+
+
+def format_summary(node: DecompNode) -> str:
+    """One-line summary of the tree's composition."""
+    counts = {"table": 0, "CIA": 0, "both": 0, "leaf": 0}
+    inductor_kept = 0
+    dtensor_missing = 0
+    untraceable = 0
+
+    def walk(n: DecompNode) -> None:
+        nonlocal inductor_kept, dtensor_missing, untraceable
+        dt = n.classification.decomp_type
+        counts[dt] = counts.get(dt, 0) + 1
+        if n.classification.inductor_excluded:
+            inductor_kept += 1
+        if n.classification.dtensor_strategy == "missing":
+            dtensor_missing += 1
+        if not n.traceable:
+            untraceable += 1
+        for c in n.children:
+            walk(c)
+
+    walk(node)
+    total = sum(counts.values())
+
+    # Build type breakdown
+    type_parts = []
+    for dt in ("table", "CIA", "both", "leaf"):
+        if counts[dt] > 0:
+            type_parts.append(f"{counts[dt]} {dt}")
+    ops_word = "op" if total == 1 else "ops"
+    parts = [f"{total} {ops_word} ({', '.join(type_parts)})"]
+
+    if inductor_kept > 0:
+        parts.append(f"{inductor_kept} inductor-kept")
+    if untraceable > 0:
+        parts.append(f"{untraceable} untraceable")
+    if dtensor_missing > 0:
+        parts.append(f"{dtensor_missing} dtensor missing")
+
+    return " · ".join(parts)
 
 
 def tree_to_dict(node: DecompNode) -> dict:
