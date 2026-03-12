@@ -13,7 +13,7 @@ pip install .
 ## Usage
 
 ```
-python -m decomp_magician <op_name> [--depth N] [--dtensor] [--verbose]
+python -m decomp_magician <op_name> [--depth N] [--dtensor] [--json] [--verbose] [--no-color]
 ```
 
 Op names are resolved flexibly — you don't need the full qualified name:
@@ -40,6 +40,8 @@ aten._native_batch_norm_legit.default  [table]
 ├── aten.squeeze.dims         [table, inductor-kept]  x3
 ├── aten.copy_.default        [leaf]  x2
 └── aten.unsqueeze.default    [table, inductor-kept]  x4
+
+9 ops (8 table, 1 leaf) · 6 inductor-kept
 ```
 
 ### Annotations
@@ -55,7 +57,9 @@ aten._native_batch_norm_legit.default  [table]
 
 - `--depth N` — Maximum recursion depth (-1 for unlimited, default)
 - `--dtensor` — Show DTensor sharding strategy coverage per op
+- `--json` — Output as JSON for scripting and CI integration
 - `--verbose` — Show full classification details (backends, tags, schema properties)
+- `--no-color` — Disable colored output (auto-detected; respects `NO_COLOR` env var)
 
 ### DTensor coverage
 
