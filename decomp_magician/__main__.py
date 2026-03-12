@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 
 from decomp_magician.resolve import resolve_op
@@ -104,6 +105,11 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Show full classification details per op",
     )
+    parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Output as JSON",
+    )
     args = parser.parse_args(argv)
 
     # Resolve the op name
@@ -123,6 +129,10 @@ def main(argv: list[str] | None = None) -> int:
     # Build and print the tree
     node = build_tree(op, depth=args.depth, dtensor=args.dtensor)
 
+    if args.json:
+        print(json.dumps(tree_to_dict(node), indent=2))
+        return 0
+
     print(format_tree(node))
 
     if args.verbose:
@@ -130,6 +140,29 @@ def main(argv: list[str] | None = None) -> int:
         _print_verbose(node)
 
     return 0
+
+
+def tree_to_dict(node: DecompNode) -> dict:
+    """Convert a DecompNode tree to a JSON-serializable dict."""
+    cls = node.classification
+    d = {
+        "op": _op_display_name(node.op),
+        "decomp_type": cls.decomp_type,
+        "count": node.count,
+        "inductor_kept": cls.inductor_excluded,
+        "backends": cls.has_backend,
+        "tags": cls.tags,
+        "mutable": cls.is_mutable,
+        "alias_info": cls.has_alias_info,
+        "traceable": node.traceable,
+    }
+    if node.error:
+        d["error"] = node.error
+    if cls.dtensor_strategy is not None:
+        d["dtensor_strategy"] = cls.dtensor_strategy
+    if node.children:
+        d["children"] = [tree_to_dict(c) for c in node.children]
+    return d
 
 
 def _print_verbose(node: DecompNode, indent: int = 0) -> None:
