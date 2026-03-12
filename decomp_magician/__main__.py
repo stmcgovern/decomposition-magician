@@ -6,6 +6,7 @@ import argparse
 import json
 import os
 import sys
+from collections import Counter
 
 from decomp_magician.resolve import resolve_op
 from decomp_magician.tree import DecompNode, build_tree
@@ -139,6 +140,11 @@ def main(argv: list[str] | None = None) -> int:
         help="Show what torch.compile produces (treat inductor-kept ops as leaves)",
     )
     parser.add_argument(
+        "--leaves",
+        action="store_true",
+        help="Show flat leaf frontier with propagated counts instead of tree",
+    )
+    parser.add_argument(
         "--verbose",
         action="store_true",
         help="Show full classification details per op",
@@ -180,18 +186,112 @@ def main(argv: list[str] | None = None) -> int:
     node = build_tree(op, depth=args.depth, dtensor=args.dtensor, compile=args.compile)
 
     if args.json:
-        print(json.dumps(tree_to_dict(node), indent=2))
+        if args.leaves:
+            print(json.dumps(_leaves_to_dict(node), indent=2))
+        else:
+            print(json.dumps(tree_to_dict(node), indent=2))
         return 0
 
-    print(format_tree(node))
-    print()
-    print(format_summary(node))
-
-    if args.verbose:
+    if args.leaves:
+        print(format_leaves(node))
+    else:
+        print(format_tree(node))
         print()
-        _print_verbose(node)
+        print(format_summary(node))
+
+        if args.verbose:
+            print()
+            _print_verbose(node)
 
     return 0
+
+
+def format_leaves(node: DecompNode) -> str:
+    """Format the leaf frontier with propagated counts."""
+    root_name = _op_display_name(node.op)
+
+    if len(node.children) == 0:
+        return f"{_c(_DIM, root_name)}  [leaf, no decomposition]"
+
+    frontier: Counter[str] = Counter()
+    inductor_kept_ops: set[str] = set()
+    untraceable_ops: set[str] = set()
+
+    def walk(n: DecompNode, multiplier: int = 1) -> None:
+        if len(n.children) == 0:
+            name = _op_display_name(n.op)
+            frontier[name] += multiplier
+            if n.classification.inductor_kept:
+                inductor_kept_ops.add(name)
+            if not n.traceable:
+                untraceable_ops.add(name)
+            return
+        for c in n.children:
+            walk(c, multiplier * c.count)
+
+    walk(node)
+
+    lines = []
+    name_width = max(len(name) for name in frontier)
+    for name, count in frontier.most_common():
+        tags = []
+        if name in inductor_kept_ops:
+            tags.append(_c(_YELLOW, "inductor-kept"))
+        if name in untraceable_ops:
+            tags.append(_c(_RED, "untraceable"))
+        tag_str = "  [" + ", ".join(tags) + "]" if tags else ""
+        lines.append(f"  {name:<{name_width}}  x{count}{tag_str}")
+
+    total = sum(frontier.values())
+    header = _c(_BOLD, root_name) + " decomposes to:"
+    footer = f"\n{len(frontier)} unique ops, {total} total instances"
+    if untraceable_ops:
+        n = len(untraceable_ops)
+        warning = _c(_RED, f"  ({n} untraceable — frontier may be incomplete)")
+        footer += warning
+    return header + "\n" + "\n".join(lines) + footer
+
+
+def _leaves_to_dict(node: DecompNode) -> dict:
+    """Convert leaf frontier to a JSON-serializable dict."""
+    root_name = _op_display_name(node.op)
+
+    if len(node.children) == 0:
+        return {"op": root_name, "decomp_type": "leaf", "leaves": []}
+
+    frontier: Counter[str] = Counter()
+    inductor_kept_ops: set[str] = set()
+    untraceable_ops: set[str] = set()
+
+    def walk(n: DecompNode, multiplier: int = 1) -> None:
+        if len(n.children) == 0:
+            name = _op_display_name(n.op)
+            frontier[name] += multiplier
+            if n.classification.inductor_kept:
+                inductor_kept_ops.add(name)
+            if not n.traceable:
+                untraceable_ops.add(name)
+            return
+        for c in n.children:
+            walk(c, multiplier * c.count)
+
+    walk(node)
+
+    leaves = []
+    for name, count in frontier.most_common():
+        entry: dict = {"op": name, "count": count}
+        if name in inductor_kept_ops:
+            entry["inductor_kept"] = True
+        if name in untraceable_ops:
+            entry["untraceable"] = True
+        leaves.append(entry)
+
+    return {
+        "op": root_name,
+        "decomp_type": node.classification.decomp_type,
+        "leaves": leaves,
+        "total_instances": sum(frontier.values()),
+    }
 
 
 def format_summary(node: DecompNode) -> str:

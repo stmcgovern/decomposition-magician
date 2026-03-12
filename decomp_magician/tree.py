@@ -79,38 +79,28 @@ _DEFAULT_SHAPE = [2, 3, 4, 4]
 _SMALL_SHAPE = [3]
 
 
+_SMALL_NAMES = ("weight", "bias", "mean", "var", "scale", "zero_point")
+
+
+def _make_meta_tensor(name: str) -> torch.Tensor:
+    """Create a meta tensor with shape chosen by argument name heuristic."""
+    name_lower = name.lower()
+    if any(n in name_lower for n in _SMALL_NAMES):
+        return torch.empty(_SMALL_SHAPE, device="meta")
+    return torch.empty(_DEFAULT_SHAPE, device="meta")
+
+
 def _make_arg(arg):
     """Create a single argument value from schema info."""
     type_str = str(arg.type)
     kind = arg.type.kind()
 
     if kind == "TensorType":
-        # Heuristic: 1D tensors for weight/bias/mean/var-like args,
-        # 4D for input-like args
-        name_lower = arg.name.lower()
-        if any(
-            n in name_lower
-            for n in ("weight", "bias", "mean", "var", "scale", "zero_point")
-        ):
-            return torch.empty(_SMALL_SHAPE, device="meta")
-        return torch.empty(_DEFAULT_SHAPE, device="meta")
+        return _make_meta_tensor(arg.name)
 
     if kind == "OptionalType":
         if "Tensor" in type_str:
-            name_lower = arg.name.lower()
-            if any(
-                n in name_lower
-                for n in (
-                    "weight",
-                    "bias",
-                    "mean",
-                    "var",
-                    "scale",
-                    "zero_point",
-                )
-            ):
-                return torch.empty(_SMALL_SHAPE, device="meta")
-            return torch.empty(_DEFAULT_SHAPE, device="meta")
+            return _make_meta_tensor(arg.name)
         if arg.default_value is not None:
             return arg.default_value
         # Provide values for optional scalars instead of None,

@@ -2,7 +2,7 @@
 
 import json
 
-from decomp_magician.__main__ import main, format_tree, format_summary, tree_to_dict
+from decomp_magician.__main__ import main, format_tree, format_leaves, format_summary, tree_to_dict
 from decomp_magician.tree import build_tree
 
 import torch
@@ -84,6 +84,48 @@ class TestSummary:
         main(["addcmul", "--depth", "0"])
         captured = capsys.readouterr()
         assert "1 op" in captured.out
+
+
+class TestLeaves:
+    def test_leaves_output(self, capsys):
+        assert main(["_native_batch_norm_legit", "--leaves"]) == 0
+        captured = capsys.readouterr()
+        assert "decomposes to:" in captured.out
+        assert "unique ops" in captured.out
+        assert "total instances" in captured.out
+
+    def test_leaves_propagated_counts(self):
+        node = build_tree(torch.ops.aten.addcmul.default)
+        output = format_leaves(node)
+        assert "prims.mul.default" in output
+        # addcmul = mul(self, mul(t1, t2)) + ... so prims.mul should appear > 2x
+        assert "x3" in output or "x4" in output or "x5" in output
+
+    def test_leaves_with_compile(self, capsys):
+        assert main(["_native_batch_norm_legit", "--compile", "--leaves"]) == 0
+        captured = capsys.readouterr()
+        assert "inductor-kept" in captured.out
+
+    def test_leaf_op_leaves(self):
+        node = build_tree(torch.ops.aten.mm.default)
+        output = format_leaves(node)
+        assert "aten.mm.default" in output
+        assert "no decomposition" in output
+
+    def test_leaves_untraceable_warning(self):
+        """Untraceable ops in frontier should trigger a warning."""
+        node = build_tree(torch.ops.aten.roll.default)
+        output = format_leaves(node)
+        assert "untraceable" in output
+        assert "incomplete" in output
+
+    def test_json_leaves(self, capsys):
+        assert main(["addcmul", "--json", "--leaves"]) == 0
+        captured = capsys.readouterr()
+        data = json.loads(captured.out)
+        assert "leaves" in data
+        assert "total_instances" in data
+        assert any("mul" in leaf["op"] for leaf in data["leaves"])
 
 
 class TestColor:
