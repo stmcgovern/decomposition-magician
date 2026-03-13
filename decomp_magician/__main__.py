@@ -8,9 +8,11 @@ import os
 import sys
 from collections import Counter
 
-from decomp_magician.graph import format_dot, format_mermaid, op_display_name
+from decomp_magician.graph import format_dot, format_mermaid
 from decomp_magician.resolve import resolve_op
-from decomp_magician.tree import DecompNode, build_tree
+from decomp_magician.reverse import reverse_lookup
+from decomp_magician.stats import compute_stats
+from decomp_magician.tree import DecompNode, build_tree, op_display_name
 
 
 # ANSI color codes
@@ -116,7 +118,13 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument(
         "op",
+        nargs="?",
         help="Operator name (e.g., 'addcmul', 'aten.addcmul.default', 'batch_norm')",
+    )
+    parser.add_argument(
+        "--stats",
+        action="store_true",
+        help="Show statistics across all decomposable ops (no op argument needed)",
     )
     parser.add_argument(
         "--depth",
@@ -138,6 +146,16 @@ def main(argv: list[str] | None = None) -> int:
         "--leaves",
         action="store_true",
         help="Show flat leaf frontier with propagated counts instead of tree",
+    )
+    parser.add_argument(
+        "--reverse",
+        action="store_true",
+        help="Reverse lookup: find all ops that decompose into the given op",
+    )
+    parser.add_argument(
+        "--include-out",
+        action="store_true",
+        help="Include _out variant ops in --reverse results (usually duplicates)",
     )
     parser.add_argument(
         "--mermaid",
@@ -173,6 +191,30 @@ def main(argv: list[str] | None = None) -> int:
     else:
         _use_color = _should_use_color()
 
+    # Stats mode — no op argument needed
+    if args.stats:
+        return _run_stats(args)
+
+    # All other modes require an op
+    if args.op is None:
+        parser.error("the following arguments are required: op")
+
+    # Validate flag combinations
+    # --mermaid, --dot, --leaves, --reverse are mutually exclusive output modes
+    # --json combines with --leaves and --reverse but not --mermaid/--dot
+    mode_flags = sum([args.mermaid, args.dot, args.leaves, args.reverse])
+    if mode_flags > 1:
+        conflicting = [f for f, v in [
+            ("--mermaid", args.mermaid), ("--dot", args.dot),
+            ("--leaves", args.leaves), ("--reverse", args.reverse),
+        ] if v]
+        print(f"Conflicting flags: {', '.join(conflicting)} (pick one)", file=sys.stderr)
+        return 1
+    if args.json and (args.mermaid or args.dot):
+        flag = "--mermaid" if args.mermaid else "--dot"
+        print(f"Conflicting flags: --json, {flag} (pick one)", file=sys.stderr)
+        return 1
+
     # Resolve the op name
     result = resolve_op(args.op)
 
@@ -194,6 +236,10 @@ def main(argv: list[str] | None = None) -> int:
         user_input = args.op.replace("::", ".")
         if user_input.count(".") < 2:
             print(f"(resolved to {resolved_name})", file=sys.stderr)
+
+    # Reverse lookup mode
+    if args.reverse:
+        return _run_reverse(resolved_name, args)
 
     # Build and print the tree
     node = build_tree(op, depth=args.depth, dtensor=args.dtensor, compile=args.compile)
@@ -231,13 +277,118 @@ def main(argv: list[str] | None = None) -> int:
     return 0
 
 
-def format_leaves(node: DecompNode) -> str:
-    """Format the leaf frontier with propagated counts."""
-    root_name = op_display_name(node.op)
+def _run_reverse(target: str, args) -> int:
+    """Run reverse lookup and print results."""
+    print(f"Scanning decomposition table for ops that produce {_c(_BOLD, target)}...",
+          file=sys.stderr)
 
-    if len(node.children) == 0:
-        return f"{_c(_DIM, root_name)}  [leaf, no decomposition]"
+    results = reverse_lookup(target, depth=args.depth, compile=args.compile,
+                             include_out=args.include_out)
 
+    if args.json:
+        print(json.dumps({"target": target, "producers": results}, indent=2))
+        return 0
+
+    if not results:
+        print(f"No ops decompose into {target}")
+        # Hint: maybe the user wanted a different overload
+        if target.endswith(".default"):
+            base = target.rsplit(".", 1)[0]
+            parts = base.split(".")
+            if len(parts) == 2:
+                try:
+                    import torch
+                    from torch._ops import OpOverloadPacket
+                    packet = getattr(getattr(torch.ops, parts[0]), parts[1])
+                    if isinstance(packet, OpOverloadPacket):
+                        overloads = [ol for ol in packet.overloads() if ol != "default"]
+                        if overloads:
+                            alts = [f"{base}.{ol}" for ol in overloads[:5]]
+                            print(f"Try a different overload: {', '.join(alts)}",
+                                  file=sys.stderr)
+                except (AttributeError, RuntimeError):
+                    pass
+        return 0
+
+    name_width = max(len(r["op"]) for r in results)
+    mode = "compile" if args.compile else "full"
+    lines = [_c(_BOLD, f"{len(results)} ops") + f" decompose into {target} ({mode} decomposition):"]
+    for r in results:
+        depth_str = _c(_DIM, f"at depth {r['target_depth']}")
+        lines.append(f"  {r['op']:<{name_width}}  x{r['count']:>3}  ({depth_str})")
+    print("\n".join(lines))
+    return 0
+
+
+def _run_stats(args) -> int:
+    """Run bulk statistics across all decomposable ops."""
+    print("Scanning all decomposable ops...", file=sys.stderr)
+
+    data = compute_stats(compile=args.compile)
+
+    if args.json:
+        json_data = {
+            "total": data["total"],
+            "total_non_out": data["total_non_out"],
+            "by_type": data["by_type"],
+            "inductor_kept": data["inductor_kept"],
+            "traceable": data["traceable"],
+            "untraceable": data["untraceable"],
+            "top_leaf_ops": [
+                {"op": name, "appearances": count}
+                for name, count in data["leaf_ops"].most_common(20)
+            ],
+            "deepest": [
+                {"op": name, "depth": depth}
+                for name, depth in data["deepest"]
+            ],
+        }
+        print(json.dumps(json_data, indent=2))
+        return 0
+
+    mode = "compile" if args.compile else "full"
+    t = data["total_non_out"]
+    trace_pct = data["traceable"] / t * 100 if t else 0
+
+    lines = [
+        _c(_BOLD, f"Decomposition table statistics") + f"  ({mode} decomposition)",
+        "",
+        f"  Total ops in table:  {data['total']}  ({data['total_non_out']} excluding _out variants)",
+    ]
+
+    by_type = data["by_type"]
+    type_parts = []
+    for dt in ("table", "both", "CIA", "leaf"):
+        if by_type.get(dt, 0) > 0:
+            type_parts.append(f"{by_type[dt]} {dt}")
+    lines.append(f"  By type:             {', '.join(type_parts)}")
+    lines.append(f"  Inductor-kept:       {_c(_YELLOW, str(data['inductor_kept']))}")
+    lines.append(f"  Traceable:           {_c(_GREEN, str(data['traceable']))} ({trace_pct:.0f}%)")
+    lines.append(f"  Untraceable:         {_c(_RED, str(data['untraceable']))}")
+
+    lines.append("")
+    lines.append(_c(_BOLD, "Top leaf ops") + "  (most common across all decompositions):")
+    top_leaves = data["leaf_ops"].most_common(15)
+    if top_leaves:
+        name_width = max(len(name) for name, _ in top_leaves)
+        for name, count in top_leaves:
+            bar = "█" * min(count // 10, 40)
+            lines.append(f"  {name:<{name_width}}  {count:>4}  {_c(_DIM, bar)}")
+
+    lines.append("")
+    lines.append(_c(_BOLD, "Deepest decomposition chains") + ":")
+    for name, depth in data["deepest"]:
+        lines.append(f"  {name:<50}  depth {depth}")
+
+    print("\n".join(lines))
+    return 0
+
+
+def _collect_leaf_frontier(node: DecompNode) -> tuple[Counter[str], set[str], set[str]]:
+    """Walk a tree and collect the leaf frontier with propagated counts.
+
+    Returns (frontier_counts, inductor_kept_names, untraceable_names).
+    """
     frontier: Counter[str] = Counter()
     inductor_kept_ops: set[str] = set()
     untraceable_ops: set[str] = set()
@@ -255,6 +406,17 @@ def format_leaves(node: DecompNode) -> str:
             walk(c, multiplier * c.count)
 
     walk(node)
+    return frontier, inductor_kept_ops, untraceable_ops
+
+
+def format_leaves(node: DecompNode) -> str:
+    """Format the leaf frontier with propagated counts."""
+    root_name = op_display_name(node.op)
+
+    if len(node.children) == 0:
+        return f"{_c(_DIM, root_name)}  [leaf, no decomposition]"
+
+    frontier, inductor_kept_ops, untraceable_ops = _collect_leaf_frontier(node)
 
     lines = []
     name_width = max(len(name) for name in frontier)
@@ -284,23 +446,7 @@ def _leaves_to_dict(node: DecompNode) -> dict:
     if len(node.children) == 0:
         return {"op": root_name, "decomp_type": "leaf", "leaves": []}
 
-    frontier: Counter[str] = Counter()
-    inductor_kept_ops: set[str] = set()
-    untraceable_ops: set[str] = set()
-
-    def walk(n: DecompNode, multiplier: int = 1) -> None:
-        if len(n.children) == 0:
-            name = op_display_name(n.op)
-            frontier[name] += multiplier
-            if n.classification.inductor_kept:
-                inductor_kept_ops.add(name)
-            if not n.traceable:
-                untraceable_ops.add(name)
-            return
-        for c in n.children:
-            walk(c, multiplier * c.count)
-
-    walk(node)
+    frontier, inductor_kept_ops, untraceable_ops = _collect_leaf_frontier(node)
 
     leaves = []
     for name, count in frontier.most_common():

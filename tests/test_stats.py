@@ -1,0 +1,65 @@
+"""Tests for bulk statistics."""
+
+import json
+
+from decomp_magician.stats import compute_stats
+from decomp_magician.__main__ import main
+
+
+class TestComputeStats:
+    def test_returns_dict(self):
+        data = compute_stats()
+        assert isinstance(data, dict)
+        assert "total" in data
+        assert "traceable" in data
+        assert "leaf_ops" in data
+        assert "deepest" in data
+
+    def test_total_gt_zero(self):
+        data = compute_stats()
+        assert data["total"] > 1000
+
+    def test_traceable_gt_zero(self):
+        data = compute_stats()
+        assert data["traceable"] > 0
+
+    def test_leaf_ops_has_entries(self):
+        data = compute_stats()
+        assert len(data["leaf_ops"]) > 0
+        # expand is the most common leaf
+        assert "aten.expand.default" in data["leaf_ops"]
+
+    def test_deepest_sorted(self):
+        data = compute_stats()
+        depths = [d for _, d in data["deepest"]]
+        assert depths == sorted(depths, reverse=True)
+
+    def test_compile_mode_different(self):
+        full = compute_stats()
+        compiled = compute_stats(compile=True)
+        # Compile mode has fewer traceable ops (inductor-kept become leaves)
+        assert compiled["traceable"] <= full["traceable"]
+
+
+class TestStatsCli:
+    def test_stats_flag(self, capsys):
+        assert main(["--stats"]) == 0
+        captured = capsys.readouterr()
+        assert "Decomposition table statistics" in captured.out
+        assert "Top leaf ops" in captured.out
+
+    def test_stats_json(self, capsys):
+        assert main(["--stats", "--json"]) == 0
+        captured = capsys.readouterr()
+        data = json.loads(captured.out)
+        assert "total" in data
+        assert "top_leaf_ops" in data
+
+    def test_stats_compile(self, capsys):
+        assert main(["--stats", "--compile"]) == 0
+        captured = capsys.readouterr()
+        assert "compile" in captured.out
+
+    def test_stats_no_op_required(self, capsys):
+        """--stats should work without an op argument."""
+        assert main(["--stats"]) == 0

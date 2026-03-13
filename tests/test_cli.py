@@ -32,6 +32,24 @@ class TestMain:
     def test_compile_flag(self):
         assert main(["_native_batch_norm_legit", "--compile"]) == 0
 
+    def test_conflicting_flags(self, capsys):
+        assert main(["addcmul", "--mermaid", "--leaves"]) == 1
+        captured = capsys.readouterr()
+        assert "Conflicting" in captured.err
+
+    def test_conflicting_reverse_mermaid(self, capsys):
+        assert main(["addcmul", "--reverse", "--dot"]) == 1
+        captured = capsys.readouterr()
+        assert "Conflicting" in captured.err
+
+    def test_json_mermaid_conflict(self, capsys):
+        assert main(["addcmul", "--json", "--mermaid"]) == 1
+        captured = capsys.readouterr()
+        assert "Conflicting" in captured.err
+
+    def test_json_leaves_allowed(self, capsys):
+        assert main(["addcmul", "--json", "--leaves"]) == 0
+
 
 class TestFormatTree:
     def test_leaf_format(self):

@@ -12,6 +12,15 @@ from torch.utils._python_dispatch import TorchDispatchMode
 from decomp_magician.classify import OpClass, classify
 
 
+def op_display_name(op) -> str:
+    """Short display name: aten.add.Tensor, always showing overload."""
+    name = op.name()
+    dotted = name.replace("::", ".")
+    if dotted.count(".") < 2:
+        dotted += ".default"
+    return dotted
+
+
 @dataclass
 class DecompNode:
     op: OpOverload

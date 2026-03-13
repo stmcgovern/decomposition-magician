@@ -2,16 +2,7 @@
 
 from __future__ import annotations
 
-from decomp_magician.tree import DecompNode
-
-
-def op_display_name(op) -> str:
-    """Short display name: aten.add.Tensor, always showing overload."""
-    name = op.name()
-    dotted = name.replace("::", ".")
-    if dotted.count(".") < 2:
-        dotted += ".default"
-    return dotted
+from decomp_magician.tree import DecompNode, op_display_name
 
 
 def _node_id(index: int) -> str:
