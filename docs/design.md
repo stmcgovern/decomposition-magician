@@ -126,4 +126,7 @@ Optional flags:
 - Modifying decompositions or dispatch tables.
 - Replacing `torch.compile` debugging.
 - Supporting custom ops or higher-order operators.
-- Graph visualization (graphviz, etc). Text tree is sufficient.
+
+> Note: Graph visualization (`--mermaid`, `--dot`) was added in v0.3.0,
+> reversing the original non-goal. Reverse lookup (`--reverse`) and bulk
+> statistics (`--stats`) were also added.

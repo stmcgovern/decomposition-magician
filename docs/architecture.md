@@ -5,7 +5,8 @@
 One CLI command. No TUI, no dependencies beyond PyTorch.
 
 ```
-python -m decomp_magician <op_name> [--dtensor] [--depth N] [--verbose]
+python -m decomp_magician <op_name> [--depth N] [--compile] [--leaves] [--reverse] [--mermaid] [--dot] [--dtensor] [--json] [--verbose]
+python -m decomp_magician --stats [--compile] [--json]
 ```
 
 Prints a decomposition tree to stdout with per-op annotations.
@@ -84,12 +85,15 @@ If an op has multiple overloads and none was specified, list them.
 decomp_magician/
 ├── __init__.py          # empty
 ├── __main__.py          # CLI entry point, argument parsing, output formatting
-├── tree.py              # decomposition tree construction via RecordingMode
+├── tree.py              # decomposition tree construction via RecordingMode (with trace cache)
 ├── classify.py          # op classification (CIA/CEA/table/leaf, backends, tags)
-└── resolve.py           # op name resolution from user input to OpOverload
+├── resolve.py           # op name resolution from user input to OpOverload
+├── graph.py             # Mermaid and Graphviz DOT export
+├── reverse.py           # reverse lookup: find ops that decompose into a target
+└── stats.py             # bulk statistics across all decomposable ops
 ```
 
-Four files. ~500 LOC total.
+Seven files. ~1200 LOC total.
 
 ### `resolve.py` — Op Name Resolution
 
@@ -206,30 +210,37 @@ class OpClass:
 | `inductor_excluded` | In raw table but absent from Inductor's `select_decomp_table()` |
 | `dtensor_strategy` | Check `ShardingPropagator` dicts (lazy import, only with `--dtensor`) |
 
+### `graph.py` — Graph Export
+
+Mermaid flowchart and Graphviz DOT export. Color-coded by classification
+(gray=leaf, green=decomposed, yellow=inductor-kept, red=untraceable).
+Shape encodes status (square=terminal, rounded=decomposable, trapezoid=untraceable).
+
+### `reverse.py` — Reverse Lookup
+
+Scans all ~730 non-out table ops, building each tree and searching for a
+target op. Returns producers sorted by count with shallowest target depth.
+CIA-only ops excluded due to C-level SIGFPE crashes in `op.decompose()`.
+
+### `stats.py` — Bulk Statistics
+
+Iterates all decomposable ops, classifying and tracing each. Reports
+traceable/untraceable counts, leaf op frequency, and deepest chains.
+Invariant: `traceable + untraceable == total_non_out` (no gaps).
+
 ### `__main__.py` — CLI and Output
 
-`argparse`. Tree rendering with box-drawing characters. ~100 lines.
-
-Annotation format:
-- `[CIA]` — CompositeImplicitAutograd kernel
-- `[table]` — in explicit decomposition table (post_autograd)
-- `[both]` — both CIA and table entry
-- `[leaf]` — no decomposition available
-- `[inductor-kept]` — Inductor excludes this from decomposition
-- `[untraceable: <reason>]` — meta tensor tracing failed
-- `x3` — appears 3 times in parent's decomposition
-- `dtensor: ok` / `dtensor: MISSING` — sharding strategy status (with `--dtensor`)
-
-`--verbose` adds: dispatch keys, backend registrations, schema, tags.
+`argparse` with multiple output modes: tree (default), `--leaves`, `--reverse`,
+`--stats`, `--mermaid`, `--dot`, `--json`. ANSI color auto-detected (respects
+`NO_COLOR` env var and `--no-color` flag). Mutually exclusive output modes
+are validated with clear error messages.
 
 ---
 
 ## What We Don't Build
 
-- **No op schema inference engine.** Default shapes work for 80% of ops.
+- **No op schema inference engine.** Default shapes work for ~74% of ops.
   The rest are marked untraceable. Users can file issues for specific ops.
-- **No graph visualization.** Text tree. Pipe to other tools if needed.
-- **No caching.** Tool runs in <1s for any single op.
 - **No config files.** CLI args are the interface.
 - **No DTensor strategy validation.** We report existence, not correctness.
 
@@ -247,24 +258,19 @@ Annotation format:
 
 ---
 
-## Packaging for Community
+## Packaging
 
 ```
 decomposition-magician/
-├── decomp_magician/        # the package
-│   ├── __init__.py
-│   ├── __main__.py
-│   ├── tree.py
-│   ├── classify.py
-│   └── resolve.py
+├── decomp_magician/        # the package (7 modules)
+├── tests/                  # pytest suite (136 tests)
+├── docs/                   # design docs and investigation
 ├── pyproject.toml           # minimal: name, version, requires pytorch
-├── README.md                # value prop, install, usage examples
-├── investigation.md         # the full analysis (reference)
-└── ARCHITECTURE.md          # this file
+└── README.md                # value prop, install, usage examples
 ```
 
 Install: `pip install .` or `pip install decomposition-magician`
-Run: `python -m decomp_magician batch_norm`
+Run: `decomp-magician batch_norm` or `python -m decomp_magician batch_norm`
 
 `pyproject.toml` declares PyTorch as the only dependency. DTensor is
 optional — the tool works without it; `--dtensor` requires
