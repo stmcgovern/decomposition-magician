@@ -9,7 +9,9 @@ import sys
 from collections import Counter
 from typing import NamedTuple
 
+from decomp_magician.diff import compute_diff
 from decomp_magician.graph import format_dot, format_mermaid
+from decomp_magician.opset import OPSETS, check_opset_coverage
 from decomp_magician.resolve import resolve_op
 from decomp_magician.reverse import reverse_lookup
 from decomp_magician.stats import compute_stats
@@ -169,6 +171,21 @@ def main(argv: list[str] | None = None) -> int:
         help="Output as Graphviz DOT graph",
     )
     parser.add_argument(
+        "--target-opset",
+        metavar="OPSET",
+        help=f"Check if op decomposes fully to target opset ({', '.join(OPSETS)})",
+    )
+    parser.add_argument(
+        "--diff",
+        action="store_true",
+        help="Show what changes between full and compile decomposition",
+    )
+    parser.add_argument(
+        "--model",
+        metavar="PATH",
+        help="Analyze an exported model (.pt2 file from torch.export)",
+    )
+    parser.add_argument(
         "--verbose",
         action="store_true",
         help="Show full classification details per op",
@@ -196,18 +213,26 @@ def main(argv: list[str] | None = None) -> int:
     if args.stats:
         return _run_stats(args)
 
+    # Model analysis mode — no op argument needed
+    if args.model:
+        return _run_model(args)
+
     # All other modes require an op
     if args.op is None:
         parser.error("the following arguments are required: op")
 
     # Validate flag combinations
-    # --mermaid, --dot, --leaves, --reverse are mutually exclusive output modes
-    # --json combines with --leaves and --reverse but not --mermaid/--dot
-    mode_flags = sum([args.mermaid, args.dot, args.leaves, args.reverse])
+    # --mermaid, --dot, --leaves, --reverse, --target-opset, --diff are mutually exclusive output modes
+    # --json combines with --leaves, --reverse, --target-opset, --diff but not --mermaid/--dot
+    mode_flags = sum([
+        args.mermaid, args.dot, args.leaves, args.reverse,
+        bool(args.target_opset), args.diff,
+    ])
     if mode_flags > 1:
         conflicting = [f for f, v in [
             ("--mermaid", args.mermaid), ("--dot", args.dot),
             ("--leaves", args.leaves), ("--reverse", args.reverse),
+            ("--target-opset", bool(args.target_opset)), ("--diff", args.diff),
         ] if v]
         print(f"Conflicting flags: {', '.join(conflicting)} (pick one)", file=sys.stderr)
         return 1
@@ -241,6 +266,14 @@ def main(argv: list[str] | None = None) -> int:
     # Reverse lookup mode
     if args.reverse:
         return _run_reverse(resolved_name, args)
+
+    # Target opset mode
+    if args.target_opset:
+        return _run_opset(op, args)
+
+    # Diff mode
+    if args.diff:
+        return _run_diff(op, args)
 
     # Build and print the tree
     node = build_tree(op, depth=args.depth, dtensor=args.dtensor, compile=args.compile)
@@ -381,6 +414,203 @@ def _run_stats(args) -> int:
     lines.append(_c(_BOLD, "Deepest decomposition chains") + ":")
     for name, depth in data.deepest:
         lines.append(f"  {name:<50}  depth {depth}")
+
+    print("\n".join(lines))
+    return 0
+
+
+def _run_opset(op, args) -> int:
+    """Check if an op decomposes fully to a target opset."""
+    try:
+        cov = check_opset_coverage(
+            op, opset=args.target_opset,
+            depth=args.depth, compile=args.compile,
+        )
+    except ValueError as e:
+        print(str(e), file=sys.stderr)
+        return 1
+
+    if args.json:
+        json_data = {
+            "op": cov.op,
+            "opset": cov.opset,
+            "fully_covered": cov.fully_covered,
+            "total_leaves": cov.total_leaves,
+            "covered_leaves": cov.covered_leaves,
+            "non_covered": [
+                {"op": name, "count": count}
+                for name, count in cov.non_covered
+            ],
+        }
+        print(json.dumps(json_data, indent=2))
+        return 0
+
+    mode = "compile" if args.compile else "full"
+    lines = [
+        _c(_BOLD, cov.op) + f"  target: {cov.opset}  ({mode} decomposition)",
+    ]
+
+    if cov.fully_covered:
+        lines.append("")
+        lines.append(_c(_GREEN, "FULLY COVERED") + f"  all {cov.total_leaves} leaf ops are in {cov.opset}")
+    else:
+        pct = cov.covered_leaves / cov.total_leaves * 100 if cov.total_leaves else 0
+        lines.append("")
+        lines.append(
+            _c(_RED, "NOT FULLY COVERED") +
+            f"  {cov.covered_leaves}/{cov.total_leaves} leaf ops in {cov.opset} ({pct:.0f}%)"
+        )
+        lines.append("")
+        lines.append(_c(_BOLD, "Non-covered ops") + f"  (not in {cov.opset}):")
+        if cov.non_covered:
+            name_width = max(len(n) for n, _ in cov.non_covered)
+            for name, count in cov.non_covered:
+                lines.append(f"  {_c(_RED, name):<{name_width + len(_RED) + len(_RESET)}}  x{count}")
+
+    print("\n".join(lines))
+    return 0
+
+
+def _run_diff(op, args) -> int:
+    """Show diff between full and compile decomposition."""
+    diff = compute_diff(op, depth=args.depth)
+
+    if args.json:
+        json_data = {
+            "op": diff.op,
+            "left_mode": diff.left_mode,
+            "right_mode": diff.right_mode,
+            "added": [{"op": n, "count": c} for n, c in diff.added.most_common()],
+            "removed": [{"op": n, "count": c} for n, c in diff.removed.most_common()],
+            "changed": [
+                {"op": n, "full_count": fc, "compile_count": cc}
+                for n, fc, cc in diff.changed
+            ],
+        }
+        print(json.dumps(json_data, indent=2))
+        return 0
+
+    has_changes = diff.added or diff.removed or diff.changed
+
+    lines = [
+        _c(_BOLD, diff.op) + f"  {diff.left_mode} vs {diff.right_mode} decomposition",
+    ]
+
+    if not has_changes:
+        lines.append("")
+        lines.append(_c(_DIM, "No differences — both modes produce the same leaf frontier."))
+        print("\n".join(lines))
+        return 0
+
+    if diff.removed:
+        lines.append("")
+        lines.append(_c(_BOLD, "Removed") + f"  (in {diff.left_mode} but not {diff.right_mode}):")
+        for name, count in diff.removed.most_common():
+            lines.append(f"  {_c(_RED, '-')} {name}  x{count}")
+
+    if diff.added:
+        lines.append("")
+        lines.append(_c(_BOLD, "Added") + f"  (in {diff.right_mode} but not {diff.left_mode}):")
+        for name, count in diff.added.most_common():
+            lines.append(f"  {_c(_GREEN, '+')} {name}  x{count}")
+
+    if diff.changed:
+        lines.append("")
+        lines.append(_c(_BOLD, "Changed counts") + ":")
+        for name, fc, cc in diff.changed:
+            direction = _c(_GREEN, "+" + str(cc - fc)) if cc > fc else _c(_RED, str(cc - fc))
+            lines.append(f"  {_c(_YELLOW, '~')} {name}  x{fc} -> x{cc}  ({direction})")
+
+    print("\n".join(lines))
+    return 0
+
+
+def _run_model(args) -> int:
+    """Analyze an exported model file."""
+    import torch
+
+    path = args.model
+    try:
+        ep = torch.export.load(path)
+    except Exception as e:
+        print(f"Failed to load model from {path}: {e}", file=sys.stderr)
+        return 1
+
+    # Collect all aten ops from the graph
+    op_counts: Counter[str] = Counter()
+    for node in ep.graph.nodes:
+        if node.op == "call_function" and isinstance(node.target, torch._ops.OpOverload):
+            op_counts[op_display_name(node.target)] += 1
+
+    if not op_counts:
+        print("No ATen ops found in the model graph.", file=sys.stderr)
+        return 1
+
+    if args.json:
+        json_data = {
+            "model": path,
+            "total_ops": sum(op_counts.values()),
+            "unique_ops": len(op_counts),
+            "ops": [
+                {"op": name, "count": count}
+                for name, count in op_counts.most_common()
+            ],
+        }
+
+        # If target opset specified, add coverage info
+        if args.target_opset:
+            from decomp_magician.opset import is_core_aten
+            covered = []
+            non_covered = []
+            for name, count in op_counts.most_common():
+                if is_core_aten(name):
+                    covered.append({"op": name, "count": count})
+                else:
+                    non_covered.append({"op": name, "count": count})
+            json_data["opset"] = args.target_opset
+            json_data["covered"] = covered
+            json_data["non_covered"] = non_covered
+
+        print(json.dumps(json_data, indent=2))
+        return 0
+
+    total = sum(op_counts.values())
+    lines = [
+        _c(_BOLD, f"Model analysis") + f"  {path}",
+        "",
+        f"  Total op instances:  {total}",
+        f"  Unique ops:          {len(op_counts)}",
+        "",
+        _c(_BOLD, "Ops in graph") + ":",
+    ]
+
+    name_width = max(len(n) for n in op_counts)
+    for name, count in op_counts.most_common():
+        lines.append(f"  {name:<{name_width}}  x{count}")
+
+    # If target opset specified, show coverage
+    if args.target_opset:
+        from decomp_magician.opset import is_core_aten
+        non_covered = [(n, c) for n, c in op_counts.most_common() if not is_core_aten(n)]
+        covered_count = len(op_counts) - len(non_covered)
+
+        lines.append("")
+        if not non_covered:
+            lines.append(
+                _c(_GREEN, "FULLY COVERED") +
+                f"  all {len(op_counts)} ops are in {args.target_opset}"
+            )
+        else:
+            pct = covered_count / len(op_counts) * 100 if op_counts else 0
+            lines.append(
+                _c(_RED, "NOT FULLY COVERED") +
+                f"  {covered_count}/{len(op_counts)} ops in {args.target_opset} ({pct:.0f}%)"
+            )
+            lines.append("")
+            lines.append(_c(_BOLD, "Non-covered ops") + f"  (not in {args.target_opset}):")
+            nc_width = max(len(n) for n, _ in non_covered)
+            for name, count in non_covered:
+                lines.append(f"  {_c(_RED, name):<{nc_width + len(_RED) + len(_RESET)}}  x{count}")
 
     print("\n".join(lines))
     return 0
