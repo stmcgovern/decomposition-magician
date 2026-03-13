@@ -37,8 +37,14 @@ class TestComputeStats:
     def test_compile_mode_different(self):
         full = compute_stats()
         compiled = compute_stats(compile=True)
-        # Compile mode has fewer traceable ops (inductor-kept become leaves)
-        assert compiled["traceable"] <= full["traceable"]
+        # Compile mode treats inductor-kept ops as leaves, so fewer untraceable
+        # failures cascade from deep decompositions
+        assert compiled["untraceable"] <= full["untraceable"]
+
+    def test_traceable_plus_untraceable_eq_total(self):
+        data = compute_stats()
+        # Every non-out op should be either traceable or untraceable (no gaps)
+        assert data["traceable"] + data["untraceable"] == data["total_non_out"]
 
 
 class TestStatsCli:

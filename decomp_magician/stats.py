@@ -56,13 +56,14 @@ def compute_stats(compile: bool = False) -> dict:
             untraceable += 1
             continue
 
-        if node.children:
-            traceable += 1
-            depth = _tree_depth(node)
-            depths.append((name, depth))
-            _collect_leaves(node, leaf_ops)
-        elif not node.traceable:
+        if not node.traceable:
             untraceable += 1
+        else:
+            traceable += 1
+            if node.children:
+                depth = _tree_depth(node)
+                depths.append((name, depth))
+                _collect_leaves(node, leaf_ops)
 
     depths.sort(key=lambda x: x[1], reverse=True)
 

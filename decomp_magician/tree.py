@@ -187,12 +187,13 @@ def _trace_decomp(op: OpOverload) -> list[OpOverload] | str:
     Results are cached since the same op always produces the same decomposition.
     Returns a list of ops, or an error string if tracing fails.
     """
-    if op in _trace_cache:
-        return _trace_cache[op]
+    cached = _trace_cache.get(op)
+    if cached is not None:
+        return list(cached) if isinstance(cached, list) else cached
 
     result = _trace_decomp_uncached(op)
     _trace_cache[op] = result
-    return result
+    return list(result) if isinstance(result, list) else result
 
 
 def _trace_decomp_uncached(op: OpOverload) -> list[OpOverload] | str:
