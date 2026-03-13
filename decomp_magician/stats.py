@@ -4,29 +4,43 @@ from __future__ import annotations
 
 import warnings
 from collections import Counter
-from typing import NamedTuple
+from dataclasses import dataclass
 
 from decomp_magician.classify import classify
 from decomp_magician.reverse import _is_out_variant
 from decomp_magician.tree import DecompNode, build_tree, op_display_name
 
 
-class StatsResult(NamedTuple):
+@dataclass(frozen=True)
+class StatsResult:
+    """Statistics across all decomposable ops.
+
+    Invariant: traceable + untraceable + classify_errors == total_non_out.
+    This is checked at construction time.
+    """
     total: int
     total_non_out: int
     by_type: dict[str, int]
     inductor_kept: int
     traceable: int
     untraceable: int
+    classify_errors: int
     leaf_ops: Counter[str]
     deepest: list[tuple[str, int]]
 
+    def __post_init__(self):
+        accounted = self.traceable + self.untraceable + self.classify_errors
+        if accounted != self.total_non_out:
+            raise ValueError(
+                f"Accounting invariant violated: "
+                f"traceable({self.traceable}) + untraceable({self.untraceable}) "
+                f"+ classify_errors({self.classify_errors}) = {accounted} "
+                f"!= total_non_out({self.total_non_out})"
+            )
+
 
 def compute_stats(compile: bool = False) -> StatsResult:
-    """Compute statistics across all decomposable ops.
-
-    Invariant: traceable + untraceable == total_non_out.
-    """
+    """Compute statistics across all decomposable ops."""
     from torch._decomp import decomposition_table
 
     all_ops = list(decomposition_table.keys())
@@ -34,17 +48,22 @@ def compute_stats(compile: bool = False) -> StatsResult:
     inductor_kept = 0
     traceable = 0
     untraceable = 0
+    classify_errors = 0
     leaf_ops: Counter[str] = Counter()
     depths: list[tuple[str, int]] = []
+    non_out_count = 0
 
     for op in all_ops:
         name = op_display_name(op)
         if _is_out_variant(name):
             continue
 
+        non_out_count += 1
+
         try:
             cls = classify(op)
         except (AttributeError, Exception):
+            classify_errors += 1
             continue
 
         by_type[cls.decomp_type] += 1
@@ -70,15 +89,14 @@ def compute_stats(compile: bool = False) -> StatsResult:
 
     depths.sort(key=lambda x: x[1], reverse=True)
 
-    non_out_total = sum(by_type.values())
-
     return StatsResult(
         total=len(all_ops),
-        total_non_out=non_out_total,
+        total_non_out=non_out_count,
         by_type=dict(by_type),
         inductor_kept=inductor_kept,
         traceable=traceable,
         untraceable=untraceable,
+        classify_errors=classify_errors,
         leaf_ops=leaf_ops,
         deepest=depths[:10],
     )

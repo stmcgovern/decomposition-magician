@@ -1,6 +1,7 @@
 """Tests for bulk statistics."""
 
 import json
+from collections import Counter
 
 from decomp_magician.stats import StatsResult, compute_stats
 from decomp_magician.__main__ import main
@@ -41,10 +42,23 @@ class TestComputeStats:
         # failures cascade from deep decompositions
         assert compiled.untraceable <= full.untraceable
 
-    def test_traceable_plus_untraceable_eq_total(self):
+    def test_accounting_invariant(self):
+        """traceable + untraceable + classify_errors == total_non_out."""
         data = compute_stats()
-        # Every non-out op should be either traceable or untraceable (no gaps)
-        assert data.traceable + data.untraceable == data.total_non_out
+        # The invariant is enforced by StatsResult.__post_init__,
+        # so construction itself would have raised if violated.
+        # Verify it explicitly here too.
+        assert data.traceable + data.untraceable + data.classify_errors == data.total_non_out
+
+    def test_accounting_invariant_rejects_bad_data(self):
+        """StatsResult raises ValueError if invariant is violated."""
+        import pytest
+        with pytest.raises(ValueError, match="Accounting invariant"):
+            StatsResult(
+                total=100, total_non_out=50, by_type={}, inductor_kept=0,
+                traceable=10, untraceable=10, classify_errors=0,
+                leaf_ops=Counter(), deepest=[],
+            )
 
 
 class TestStatsCli:
@@ -60,6 +74,7 @@ class TestStatsCli:
         data = json.loads(captured.out)
         assert "total" in data
         assert "top_leaf_ops" in data
+        assert "classify_errors" in data
 
     def test_stats_compile(self, capsys):
         assert main(["--stats", "--compile"]) == 0

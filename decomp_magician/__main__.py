@@ -335,6 +335,7 @@ def _run_stats(args) -> int:
             "inductor_kept": data.inductor_kept,
             "traceable": data.traceable,
             "untraceable": data.untraceable,
+            "classify_errors": data.classify_errors,
             "top_leaf_ops": [
                 {"op": name, "appearances": count}
                 for name, count in data.leaf_ops.most_common(20)
@@ -364,6 +365,8 @@ def _run_stats(args) -> int:
     lines.append(f"  Inductor-kept:       {_c(_YELLOW, str(data.inductor_kept))}")
     lines.append(f"  Traceable:           {_c(_GREEN, str(data.traceable))} ({trace_pct:.0f}%)")
     lines.append(f"  Untraceable:         {_c(_RED, str(data.untraceable))}")
+    if data.classify_errors > 0:
+        lines.append(f"  Classify errors:     {_c(_DIM, str(data.classify_errors))}")
 
     lines.append("")
     lines.append(_c(_BOLD, "Top leaf ops") + "  (most common across all decompositions):")

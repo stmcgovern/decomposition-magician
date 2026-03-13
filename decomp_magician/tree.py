@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections import Counter
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import torch
 from torch._ops import OpOverload
@@ -26,7 +26,7 @@ class DecompNode:
     op: OpOverload
     children: tuple[DecompNode, ...] = ()
     count: int = 1
-    classification: OpClass = OpClass("leaf", {}, (), False, False, False)
+    classification: OpClass = OpClass("leaf")
     traceable: bool = True
     error: str | None = None
 
@@ -178,6 +178,10 @@ def _make_arg(arg):
     return _SENTINEL
 
 
+# Module-level cache: maps each OpOverload to its traced decomposition result.
+# Values are immutable (tuples or strings), so sharing is safe.
+# Grows without bound but only up to the number of unique ops (~1200).
+# For long-running library use, call _trace_cache.clear() to reclaim.
 _trace_cache: dict[OpOverload, tuple[OpOverload, ...] | str] = {}
 
 
@@ -353,18 +357,13 @@ def build_tree(
     next_depth = depth - 1 if depth > 0 else -1
     child_ancestors = _ancestors | {op_name}
 
-    children = []
-    for child_op, count in op_counts.items():
-        child = build_tree(
-            child_op, depth=next_depth, dtensor=dtensor, compile=compile,
-            _ancestors=child_ancestors,
+    children = tuple(
+        replace(
+            build_tree(child_op, depth=next_depth, dtensor=dtensor,
+                       compile=compile, _ancestors=child_ancestors),
+            count=count,
         )
-        if count != 1:
-            child = DecompNode(
-                op=child.op, children=child.children, count=count,
-                classification=child.classification, traceable=child.traceable,
-                error=child.error,
-            )
-        children.append(child)
+        for child_op, count in op_counts.items()
+    )
 
-    return DecompNode(op=op, children=tuple(children), classification=cls)
+    return DecompNode(op=op, children=children, classification=cls)

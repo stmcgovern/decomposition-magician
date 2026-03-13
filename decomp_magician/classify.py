@@ -11,12 +11,16 @@ from torch._ops import OpOverload
 @dataclass(frozen=True)
 class OpClass:
     decomp_type: str  # "CIA", "table", "both", "leaf"
-    has_backend: dict[str, bool]
-    tags: tuple[str, ...]
-    is_mutable: bool
-    has_alias_info: bool
-    inductor_kept: bool
+    has_backend: dict[str, bool] = None  # type: ignore[assignment]
+    tags: tuple[str, ...] = ()
+    is_mutable: bool = False
+    has_alias_info: bool = False
+    inductor_kept: bool = False
     dtensor_strategy: str | None = None  # "registered", "decomp-fallback", "missing"
+
+    def __post_init__(self):
+        if self.has_backend is None:
+            object.__setattr__(self, "has_backend", {})
 
 
 # Backend dispatch keys to check
