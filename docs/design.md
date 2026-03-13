@@ -130,3 +130,34 @@ Optional flags:
 > Note: Graph visualization (`--mermaid`, `--dot`) was added in v0.3.0,
 > reversing the original non-goal. Reverse lookup (`--reverse`) and bulk
 > statistics (`--stats`) were also added.
+
+## Roadmap (v0.4.0)
+
+### Subcommands
+
+The flat flag namespace has grown to ~15 flags. Several of these are
+mutually-exclusive output modes (`--stats`, `--reverse`, `--diff`,
+`--leaves`, `--mermaid`, `--dot`, `--target-opset`, `--model`) that
+would be clearer as subcommands:
+
+```
+decomp tree   addcmul              # default tree view (current bare invocation)
+decomp model  model.pt2 --opset core_aten   # model-level analysis
+decomp stats  --compile            # bulk statistics
+decomp diff   softmax              # full vs compile comparison
+decomp reverse prims.mul.default   # reverse lookup
+```
+
+This removes the need for mutually-exclusive flag validation, makes
+`--help` per-subcommand instead of a wall of text, and lets each
+subcommand define only the flags it accepts (e.g. `--include-out` only
+on `reverse`). The bare `decomp_magician <op>` invocation should
+remain as a shortcut for `decomp tree <op>` for backwards
+compatibility.
+
+### Additional opsets
+
+Only `core_aten` is supported today. Potential additions:
+- `inductor` — the ops torch.compile/inductor lowers directly
+- `onnx` — the ONNX export opset
+- `xla` — ops with XLA lowerings
