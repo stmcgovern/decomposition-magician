@@ -465,7 +465,8 @@ def _run_opset(op, args) -> int:
         if cov.non_covered:
             name_width = max(len(n) for n, _ in cov.non_covered)
             for name, count in cov.non_covered:
-                lines.append(f"  {_c(_RED, name):<{name_width + len(_RED) + len(_RESET)}}  x{count}")
+                padded = name.ljust(name_width)
+                lines.append(f"  {_c(_RED, padded)}  x{count}")
 
     print("\n".join(lines))
     return 0
@@ -527,14 +528,30 @@ def _run_diff(op, args) -> int:
 
 def _run_model(args) -> int:
     """Analyze an exported model file."""
+    import warnings
+
     import torch
 
     path = args.model
     try:
-        ep = torch.export.load(path)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            ep = torch.export.load(path)
     except Exception as e:
         print(f"Failed to load model from {path}: {e}", file=sys.stderr)
         return 1
+
+    # If target opset specified, decompose the graph first
+    if args.target_opset == "core_aten":
+        print("Decomposing model to core ATen ops...", file=sys.stderr)
+        from torch._decomp import core_aten_decompositions
+        try:
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                ep = ep.run_decompositions(core_aten_decompositions())
+        except Exception as e:
+            print(f"Failed to decompose model: {e}", file=sys.stderr)
+            return 1
 
     # Collect all aten ops from the graph
     op_counts: Counter[str] = Counter()
@@ -547,7 +564,7 @@ def _run_model(args) -> int:
         return 1
 
     if args.json:
-        json_data = {
+        json_data: dict = {
             "model": path,
             "total_ops": sum(op_counts.values()),
             "unique_ops": len(op_counts),
@@ -556,27 +573,16 @@ def _run_model(args) -> int:
                 for name, count in op_counts.most_common()
             ],
         }
-
-        # If target opset specified, add coverage info
         if args.target_opset:
-            from decomp_magician.opset import is_core_aten
-            covered = []
-            non_covered = []
-            for name, count in op_counts.most_common():
-                if is_core_aten(name):
-                    covered.append({"op": name, "count": count})
-                else:
-                    non_covered.append({"op": name, "count": count})
             json_data["opset"] = args.target_opset
-            json_data["covered"] = covered
-            json_data["non_covered"] = non_covered
-
+            json_data["decomposed"] = True
         print(json.dumps(json_data, indent=2))
         return 0
 
     total = sum(op_counts.values())
+    stage = f"  (after {args.target_opset} decomposition)" if args.target_opset else ""
     lines = [
-        _c(_BOLD, f"Model analysis") + f"  {path}",
+        _c(_BOLD, "Model analysis") + f"  {path}{stage}",
         "",
         f"  Total op instances:  {total}",
         f"  Unique ops:          {len(op_counts)}",
@@ -588,29 +594,11 @@ def _run_model(args) -> int:
     for name, count in op_counts.most_common():
         lines.append(f"  {name:<{name_width}}  x{count}")
 
-    # If target opset specified, show coverage
     if args.target_opset:
-        from decomp_magician.opset import is_core_aten
-        non_covered = [(n, c) for n, c in op_counts.most_common() if not is_core_aten(n)]
-        covered_count = len(op_counts) - len(non_covered)
-
         lines.append("")
-        if not non_covered:
-            lines.append(
-                _c(_GREEN, "FULLY COVERED") +
-                f"  all {len(op_counts)} ops are in {args.target_opset}"
-            )
-        else:
-            pct = covered_count / len(op_counts) * 100 if op_counts else 0
-            lines.append(
-                _c(_RED, "NOT FULLY COVERED") +
-                f"  {covered_count}/{len(op_counts)} ops in {args.target_opset} ({pct:.0f}%)"
-            )
-            lines.append("")
-            lines.append(_c(_BOLD, "Non-covered ops") + f"  (not in {args.target_opset}):")
-            nc_width = max(len(n) for n, _ in non_covered)
-            for name, count in non_covered:
-                lines.append(f"  {_c(_RED, name):<{nc_width + len(_RED) + len(_RESET)}}  x{count}")
+        lines.append(
+            _c(_DIM, f"These are the ops a {args.target_opset} backend must implement for this model.")
+        )
 
     print("\n".join(lines))
     return 0
