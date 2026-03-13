@@ -178,11 +178,25 @@ def _make_arg(arg):
     return _SENTINEL
 
 
+_trace_cache: dict[OpOverload, list[OpOverload] | str] = {}
+
+
 def _trace_decomp(op: OpOverload) -> list[OpOverload] | str:
     """Run the decomposition and record which ops are called.
 
+    Results are cached since the same op always produces the same decomposition.
     Returns a list of ops, or an error string if tracing fails.
     """
+    if op in _trace_cache:
+        return _trace_cache[op]
+
+    result = _trace_decomp_uncached(op)
+    _trace_cache[op] = result
+    return result
+
+
+def _trace_decomp_uncached(op: OpOverload) -> list[OpOverload] | str:
+    """Run the decomposition and record which ops are called (no caching)."""
     decomp_fn = _get_decomp_fn(op)
     if decomp_fn is None:
         return "no decomposition"
