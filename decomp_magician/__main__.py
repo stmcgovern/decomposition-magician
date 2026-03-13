@@ -8,6 +8,7 @@ import os
 import sys
 from collections import Counter
 
+from decomp_magician.graph import format_dot, format_mermaid, op_display_name
 from decomp_magician.resolve import resolve_op
 from decomp_magician.tree import DecompNode, build_tree
 
@@ -46,7 +47,7 @@ def format_tree(node: DecompNode, prefix: str = "", is_last: bool = True, is_roo
     annotation = _format_annotation(node)
 
     # Build the line
-    op_name = _op_display_name(node.op)
+    op_name = op_display_name(node.op)
     if node.classification.decomp_type == "leaf":
         op_name = _c(_DIM, op_name)
     else:
@@ -69,16 +70,6 @@ def format_tree(node: DecompNode, prefix: str = "", is_last: bool = True, is_roo
 
     return "\n".join(lines)
 
-
-def _op_display_name(op) -> str:
-    """Short display name: aten.add.Tensor, always showing overload."""
-    name = op.name()  # "aten::add.Tensor" or "aten::rsqrt" (default omits overload)
-    dotted = name.replace("::", ".")
-    # PyTorch omits ".default" from name() — add it back for clarity
-    # A name without overload has exactly one dot: "aten.rsqrt"
-    if dotted.count(".") < 2:
-        dotted += ".default"
-    return dotted
 
 
 def _format_annotation(node: DecompNode) -> str:
@@ -149,6 +140,16 @@ def main(argv: list[str] | None = None) -> int:
         help="Show flat leaf frontier with propagated counts instead of tree",
     )
     parser.add_argument(
+        "--mermaid",
+        action="store_true",
+        help="Output as Mermaid flowchart (renders in GitHub markdown)",
+    )
+    parser.add_argument(
+        "--dot",
+        action="store_true",
+        help="Output as Graphviz DOT graph",
+    )
+    parser.add_argument(
         "--verbose",
         action="store_true",
         help="Show full classification details per op",
@@ -187,8 +188,9 @@ def main(argv: list[str] | None = None) -> int:
     op = result
 
     # Show which overload was selected when it's non-obvious
-    resolved_name = _op_display_name(op)
-    if not resolved_name.endswith(".default") and not args.json:
+    resolved_name = op_display_name(op)
+    graph_mode = args.mermaid or args.dot
+    if not resolved_name.endswith(".default") and not args.json and not graph_mode:
         user_input = args.op.replace("::", ".")
         if user_input.count(".") < 2:
             print(f"(resolved to {resolved_name})", file=sys.stderr)
@@ -201,6 +203,18 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps(_leaves_to_dict(node), indent=2))
         else:
             print(json.dumps(tree_to_dict(node), indent=2))
+        return 0
+
+    if args.mermaid:
+        print(format_mermaid(node))
+        print("", file=sys.stderr)
+        print("Paste into ```mermaid fenced block in GitHub markdown to render.", file=sys.stderr)
+        return 0
+
+    if args.dot:
+        print(format_dot(node))
+        print("", file=sys.stderr)
+        print("Pipe to: dot -Tsvg > graph.svg  or  dot -Tpng > graph.png", file=sys.stderr)
         return 0
 
     if args.leaves:
@@ -219,7 +233,7 @@ def main(argv: list[str] | None = None) -> int:
 
 def format_leaves(node: DecompNode) -> str:
     """Format the leaf frontier with propagated counts."""
-    root_name = _op_display_name(node.op)
+    root_name = op_display_name(node.op)
 
     if len(node.children) == 0:
         return f"{_c(_DIM, root_name)}  [leaf, no decomposition]"
@@ -230,7 +244,7 @@ def format_leaves(node: DecompNode) -> str:
 
     def walk(n: DecompNode, multiplier: int = 1) -> None:
         if len(n.children) == 0:
-            name = _op_display_name(n.op)
+            name = op_display_name(n.op)
             frontier[name] += multiplier
             if n.classification.inductor_kept:
                 inductor_kept_ops.add(name)
@@ -265,7 +279,7 @@ def format_leaves(node: DecompNode) -> str:
 
 def _leaves_to_dict(node: DecompNode) -> dict:
     """Convert leaf frontier to a JSON-serializable dict."""
-    root_name = _op_display_name(node.op)
+    root_name = op_display_name(node.op)
 
     if len(node.children) == 0:
         return {"op": root_name, "decomp_type": "leaf", "leaves": []}
@@ -276,7 +290,7 @@ def _leaves_to_dict(node: DecompNode) -> dict:
 
     def walk(n: DecompNode, multiplier: int = 1) -> None:
         if len(n.children) == 0:
-            name = _op_display_name(n.op)
+            name = op_display_name(n.op)
             frontier[name] += multiplier
             if n.classification.inductor_kept:
                 inductor_kept_ops.add(name)
@@ -350,7 +364,7 @@ def tree_to_dict(node: DecompNode) -> dict:
     """Convert a DecompNode tree to a JSON-serializable dict."""
     cls = node.classification
     d = {
-        "op": _op_display_name(node.op),
+        "op": op_display_name(node.op),
         "decomp_type": cls.decomp_type,
         "count": node.count,
         "inductor_kept": cls.inductor_kept,
@@ -373,7 +387,7 @@ def _print_verbose(node: DecompNode, indent: int = 0) -> None:
     """Print detailed classification for each node."""
     prefix = "  " * indent
     cls = node.classification
-    name = _op_display_name(node.op)
+    name = op_display_name(node.op)
     print(f"{prefix}{name}:")
     print(f"{prefix}  decomp_type: {cls.decomp_type}")
     backends = ", ".join(k for k, v in cls.has_backend.items() if v)
