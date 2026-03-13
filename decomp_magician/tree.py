@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections import Counter
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 import torch
 from torch._ops import OpOverload
@@ -21,12 +21,12 @@ def op_display_name(op) -> str:
     return dotted
 
 
-@dataclass
+@dataclass(frozen=True)
 class DecompNode:
     op: OpOverload
-    children: list[DecompNode] = field(default_factory=list)
+    children: tuple[DecompNode, ...] = ()
     count: int = 1
-    classification: OpClass = field(default_factory=lambda: OpClass("leaf"))
+    classification: OpClass = OpClass("leaf", {}, (), False, False, False)
     traceable: bool = True
     error: str | None = None
 
@@ -178,25 +178,25 @@ def _make_arg(arg):
     return _SENTINEL
 
 
-_trace_cache: dict[OpOverload, list[OpOverload] | str] = {}
+_trace_cache: dict[OpOverload, tuple[OpOverload, ...] | str] = {}
 
 
-def _trace_decomp(op: OpOverload) -> list[OpOverload] | str:
+def _trace_decomp(op: OpOverload) -> tuple[OpOverload, ...] | str:
     """Run the decomposition and record which ops are called.
 
     Results are cached since the same op always produces the same decomposition.
-    Returns a list of ops, or an error string if tracing fails.
+    Returns a tuple of ops, or an error string if tracing fails.
     """
     cached = _trace_cache.get(op)
     if cached is not None:
-        return list(cached) if isinstance(cached, list) else cached
+        return cached
 
     result = _trace_decomp_uncached(op)
     _trace_cache[op] = result
-    return list(result) if isinstance(result, list) else result
+    return result
 
 
-def _trace_decomp_uncached(op: OpOverload) -> list[OpOverload] | str:
+def _trace_decomp_uncached(op: OpOverload) -> tuple[OpOverload, ...] | str:
     """Run the decomposition and record which ops are called (no caching)."""
     decomp_fn = _get_decomp_fn(op)
     if decomp_fn is None:
@@ -208,7 +208,7 @@ def _trace_decomp_uncached(op: OpOverload) -> list[OpOverload] | str:
 
     args, kwargs = meta_result
     result = _try_trace(decomp_fn, args, kwargs)
-    if isinstance(result, list):
+    if isinstance(result, tuple):
         return result
 
     # Retry with booleans flipped (e.g. _softmax's half_to_float=True
@@ -216,7 +216,7 @@ def _trace_decomp_uncached(op: OpOverload) -> list[OpOverload] | str:
     flipped = _flip_bools(args, kwargs)
     if flipped is not None:
         retry = _try_trace(decomp_fn, *flipped)
-        if isinstance(retry, list):
+        if isinstance(retry, tuple):
             return retry
 
     # Retry with optional scalars filled in (e.g. clamp(min=None, max=None)
@@ -224,7 +224,7 @@ def _trace_decomp_uncached(op: OpOverload) -> list[OpOverload] | str:
     filled = _fill_optional_scalars(op, args, kwargs)
     if filled is not None:
         retry = _try_trace(decomp_fn, *filled)
-        if isinstance(retry, list):
+        if isinstance(retry, tuple):
             return retry
 
     # Retry with integer dtype for ops that require integral tensors
@@ -237,7 +237,7 @@ def _trace_decomp_uncached(op: OpOverload) -> list[OpOverload] | str:
             for k, v in kwargs.items()
         }
         retry = _try_trace(decomp_fn, int_args, int_kwargs)
-        if isinstance(retry, list):
+        if isinstance(retry, tuple):
             return retry
 
     return result
@@ -300,7 +300,7 @@ def _fill_optional_scalars(op: OpOverload, args: list, kwargs: dict) -> tuple[li
     return (new_args, new_kwargs) if changed else None
 
 
-def _try_trace(decomp_fn, args, kwargs) -> list[OpOverload] | str:
+def _try_trace(decomp_fn, args, kwargs) -> tuple[OpOverload, ...] | str:
     """Attempt to trace a decomposition function, returning ops or error."""
     recorder = _RecordingMode()
     try:
@@ -308,7 +308,7 @@ def _try_trace(decomp_fn, args, kwargs) -> list[OpOverload] | str:
             decomp_fn(*args, **kwargs)
     except Exception as e:
         return f"{type(e).__name__}: {e}"
-    return recorder.ops
+    return tuple(recorder.ops)
 
 
 def build_tree(
@@ -329,43 +329,42 @@ def build_tree(
     if _ancestors is None:
         _ancestors = frozenset()
 
-    node = DecompNode(
-        op=op,
-        classification=classify(op, dtensor=dtensor),
-    )
+    cls = classify(op, dtensor=dtensor)
 
     # Leaf or depth exhausted — no children
-    if node.classification.decomp_type == "leaf" or depth == 0:
-        return node
+    if cls.decomp_type == "leaf" or depth == 0:
+        return DecompNode(op=op, classification=cls)
 
     # In compile mode, inductor-kept ops are treated as leaves
-    if compile and node.classification.inductor_kept:
-        return node
+    if compile and cls.inductor_kept:
+        return DecompNode(op=op, classification=cls)
 
     # Cycle detection: if this op is already an ancestor, stop recursion
     op_name = op.name()
     if op_name in _ancestors:
-        node.traceable = False
-        node.error = "cycle detected"
-        return node
+        return DecompNode(op=op, classification=cls, traceable=False, error="cycle detected")
 
     result = _trace_decomp(op)
     if isinstance(result, str):
-        node.traceable = False
-        node.error = result
-        return node
+        return DecompNode(op=op, classification=cls, traceable=False, error=result)
 
-    # Count and deduplicate
+    # Count and deduplicate, then build children bottom-up
     op_counts = Counter(result)
     next_depth = depth - 1 if depth > 0 else -1
     child_ancestors = _ancestors | {op_name}
 
+    children = []
     for child_op, count in op_counts.items():
         child = build_tree(
             child_op, depth=next_depth, dtensor=dtensor, compile=compile,
             _ancestors=child_ancestors,
         )
-        child.count = count
-        node.children.append(child)
+        if count != 1:
+            child = DecompNode(
+                op=child.op, children=child.children, count=count,
+                classification=child.classification, traceable=child.traceable,
+                error=child.error,
+            )
+        children.append(child)
 
-    return node
+    return DecompNode(op=op, children=tuple(children), classification=cls)

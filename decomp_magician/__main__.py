@@ -7,6 +7,7 @@ import json
 import os
 import sys
 from collections import Counter
+from typing import NamedTuple
 
 from decomp_magician.graph import format_dot, format_mermaid
 from decomp_magician.resolve import resolve_op
@@ -328,47 +329,45 @@ def _run_stats(args) -> int:
 
     if args.json:
         json_data = {
-            "total": data["total"],
-            "total_non_out": data["total_non_out"],
-            "by_type": data["by_type"],
-            "inductor_kept": data["inductor_kept"],
-            "traceable": data["traceable"],
-            "untraceable": data["untraceable"],
+            "total": data.total,
+            "total_non_out": data.total_non_out,
+            "by_type": data.by_type,
+            "inductor_kept": data.inductor_kept,
+            "traceable": data.traceable,
+            "untraceable": data.untraceable,
             "top_leaf_ops": [
                 {"op": name, "appearances": count}
-                for name, count in data["leaf_ops"].most_common(20)
+                for name, count in data.leaf_ops.most_common(20)
             ],
             "deepest": [
                 {"op": name, "depth": depth}
-                for name, depth in data["deepest"]
+                for name, depth in data.deepest
             ],
         }
         print(json.dumps(json_data, indent=2))
         return 0
 
     mode = "compile" if args.compile else "full"
-    t = data["total_non_out"]
-    trace_pct = data["traceable"] / t * 100 if t else 0
+    trace_pct = data.traceable / data.total_non_out * 100 if data.total_non_out else 0
 
     lines = [
         _c(_BOLD, f"Decomposition table statistics") + f"  ({mode} decomposition)",
         "",
-        f"  Total ops in table:  {data['total']}  ({data['total_non_out']} excluding _out variants)",
+        f"  Total ops in table:  {data.total}  ({data.total_non_out} excluding _out variants)",
     ]
 
-    by_type = data["by_type"]
     type_parts = []
     for dt in ("table", "both", "CIA", "leaf"):
-        if by_type.get(dt, 0) > 0:
-            type_parts.append(f"{by_type[dt]} {dt}")
+        if data.by_type.get(dt, 0) > 0:
+            type_parts.append(f"{data.by_type[dt]} {dt}")
     lines.append(f"  By type:             {', '.join(type_parts)}")
-    lines.append(f"  Inductor-kept:       {_c(_YELLOW, str(data['inductor_kept']))}")
-    lines.append(f"  Traceable:           {_c(_GREEN, str(data['traceable']))} ({trace_pct:.0f}%)")
-    lines.append(f"  Untraceable:         {_c(_RED, str(data['untraceable']))}")
+    lines.append(f"  Inductor-kept:       {_c(_YELLOW, str(data.inductor_kept))}")
+    lines.append(f"  Traceable:           {_c(_GREEN, str(data.traceable))} ({trace_pct:.0f}%)")
+    lines.append(f"  Untraceable:         {_c(_RED, str(data.untraceable))}")
 
     lines.append("")
     lines.append(_c(_BOLD, "Top leaf ops") + "  (most common across all decompositions):")
-    top_leaves = data["leaf_ops"].most_common(15)
+    top_leaves = data.leaf_ops.most_common(15)
     if top_leaves:
         name_width = max(len(name) for name, _ in top_leaves)
         for name, count in top_leaves:
@@ -377,18 +376,21 @@ def _run_stats(args) -> int:
 
     lines.append("")
     lines.append(_c(_BOLD, "Deepest decomposition chains") + ":")
-    for name, depth in data["deepest"]:
+    for name, depth in data.deepest:
         lines.append(f"  {name:<50}  depth {depth}")
 
     print("\n".join(lines))
     return 0
 
 
-def _collect_leaf_frontier(node: DecompNode) -> tuple[Counter[str], set[str], set[str]]:
-    """Walk a tree and collect the leaf frontier with propagated counts.
+class LeafFrontier(NamedTuple):
+    counts: Counter[str]
+    inductor_kept: set[str]
+    untraceable: set[str]
 
-    Returns (frontier_counts, inductor_kept_names, untraceable_names).
-    """
+
+def _collect_leaf_frontier(node: DecompNode) -> LeafFrontier:
+    """Walk a tree and collect the leaf frontier with propagated counts."""
     frontier: Counter[str] = Counter()
     inductor_kept_ops: set[str] = set()
     untraceable_ops: set[str] = set()
@@ -406,7 +408,7 @@ def _collect_leaf_frontier(node: DecompNode) -> tuple[Counter[str], set[str], se
             walk(c, multiplier * c.count)
 
     walk(node)
-    return frontier, inductor_kept_ops, untraceable_ops
+    return LeafFrontier(frontier, inductor_kept_ops, untraceable_ops)
 
 
 def format_leaves(node: DecompNode) -> str:
@@ -416,24 +418,24 @@ def format_leaves(node: DecompNode) -> str:
     if len(node.children) == 0:
         return f"{_c(_DIM, root_name)}  [leaf, no decomposition]"
 
-    frontier, inductor_kept_ops, untraceable_ops = _collect_leaf_frontier(node)
+    lf = _collect_leaf_frontier(node)
 
     lines = []
-    name_width = max(len(name) for name in frontier)
-    for name, count in frontier.most_common():
+    name_width = max(len(name) for name in lf.counts)
+    for name, count in lf.counts.most_common():
         tags = []
-        if name in inductor_kept_ops:
+        if name in lf.inductor_kept:
             tags.append(_c(_YELLOW, "inductor-kept"))
-        if name in untraceable_ops:
+        if name in lf.untraceable:
             tags.append(_c(_RED, "untraceable"))
         tag_str = "  [" + ", ".join(tags) + "]" if tags else ""
         lines.append(f"  {name:<{name_width}}  x{count}{tag_str}")
 
-    total = sum(frontier.values())
+    total = sum(lf.counts.values())
     header = _c(_BOLD, root_name) + " decomposes to:"
-    footer = f"\n{len(frontier)} unique ops, {total} total instances"
-    if untraceable_ops:
-        n = len(untraceable_ops)
+    footer = f"\n{len(lf.counts)} unique ops, {total} total instances"
+    if lf.untraceable:
+        n = len(lf.untraceable)
         warning = _c(_RED, f"  ({n} untraceable — frontier may be incomplete)")
         footer += warning
     return header + "\n" + "\n".join(lines) + footer
@@ -446,14 +448,14 @@ def _leaves_to_dict(node: DecompNode) -> dict:
     if len(node.children) == 0:
         return {"op": root_name, "decomp_type": "leaf", "leaves": []}
 
-    frontier, inductor_kept_ops, untraceable_ops = _collect_leaf_frontier(node)
+    lf = _collect_leaf_frontier(node)
 
     leaves = []
-    for name, count in frontier.most_common():
+    for name, count in lf.counts.most_common():
         entry: dict = {"op": name, "count": count}
-        if name in inductor_kept_ops:
+        if name in lf.inductor_kept:
             entry["inductor_kept"] = True
-        if name in untraceable_ops:
+        if name in lf.untraceable:
             entry["untraceable"] = True
         leaves.append(entry)
 
@@ -461,7 +463,7 @@ def _leaves_to_dict(node: DecompNode) -> dict:
         "op": root_name,
         "decomp_type": node.classification.decomp_type,
         "leaves": leaves,
-        "total_instances": sum(frontier.values()),
+        "total_instances": sum(lf.counts.values()),
     }
 
 

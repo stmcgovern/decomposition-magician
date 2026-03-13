@@ -9,7 +9,7 @@ class TestTraceDecomp:
     def test_addcmul(self):
         op = torch.ops.aten.addcmul.default
         result = _trace_decomp(op)
-        assert isinstance(result, list)
+        assert isinstance(result, tuple)
         names = [o.name() for o in result]
         assert "aten::mul.Tensor" in names
         assert "aten::add.Tensor" in names
@@ -17,7 +17,7 @@ class TestTraceDecomp:
     def test_batch_norm_legit(self):
         op = torch.ops.aten._native_batch_norm_legit.default
         result = _trace_decomp(op)
-        assert isinstance(result, list)
+        assert isinstance(result, tuple)
         names = [o.name() for o in result]
         assert "aten::squeeze.dims" in names
 
@@ -31,7 +31,7 @@ class TestTraceDecomp:
         # dropout has CIA
         op = torch.ops.aten.dropout.default
         result = _trace_decomp(op)
-        assert isinstance(result, list)
+        assert isinstance(result, tuple)
 
 
 class TestMakeMetaArgs:

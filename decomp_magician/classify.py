@@ -2,20 +2,20 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 import torch
 from torch._ops import OpOverload
 
 
-@dataclass
+@dataclass(frozen=True)
 class OpClass:
     decomp_type: str  # "CIA", "table", "both", "leaf"
-    has_backend: dict[str, bool] = field(default_factory=dict)
-    tags: list[str] = field(default_factory=list)
-    is_mutable: bool = False
-    has_alias_info: bool = False
-    inductor_kept: bool = False
+    has_backend: dict[str, bool]
+    tags: tuple[str, ...]
+    is_mutable: bool
+    has_alias_info: bool
+    inductor_kept: bool
     dtensor_strategy: str | None = None  # "registered", "decomp-fallback", "missing"
 
 
@@ -79,25 +79,8 @@ def _get_backends(op: OpOverload) -> dict[str, bool]:
     return result
 
 
-def _get_tags(op: OpOverload) -> list[str]:
-    return [str(t).split(".")[-1] for t in op.tags]
-
-
-def classify(op: OpOverload, dtensor: bool = False) -> OpClass:
-    """Classify an op's decomposition type, backend support, and properties."""
-    cls = OpClass(
-        decomp_type=_get_decomp_type(op),
-        has_backend=_get_backends(op),
-        tags=_get_tags(op),
-        is_mutable=op._schema.is_mutable,
-        has_alias_info=any(
-            arg.alias_info is not None for arg in op._schema.arguments
-        ),
-        inductor_kept=op.name() in _build_inductor_kept(),
-    )
-    if dtensor:
-        cls.dtensor_strategy = _get_dtensor_strategy(op)
-    return cls
+def _get_tags(op: OpOverload) -> tuple[str, ...]:
+    return tuple(str(t).split(".")[-1] for t in op.tags)
 
 
 def _get_dtensor_strategy(op: OpOverload) -> str:
@@ -120,3 +103,18 @@ def _get_dtensor_strategy(op: OpOverload) -> str:
         return "missing"
     except ImportError:
         return "missing"
+
+
+def classify(op: OpOverload, dtensor: bool = False) -> OpClass:
+    """Classify an op's decomposition type, backend support, and properties."""
+    return OpClass(
+        decomp_type=_get_decomp_type(op),
+        has_backend=_get_backends(op),
+        tags=_get_tags(op),
+        is_mutable=op._schema.is_mutable,
+        has_alias_info=any(
+            arg.alias_info is not None for arg in op._schema.arguments
+        ),
+        inductor_kept=op.name() in _build_inductor_kept(),
+        dtensor_strategy=_get_dtensor_strategy(op) if dtensor else None,
+    )

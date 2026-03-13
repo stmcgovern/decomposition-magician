@@ -4,23 +4,28 @@ from __future__ import annotations
 
 import warnings
 from collections import Counter
+from typing import NamedTuple
 
 from decomp_magician.classify import classify
 from decomp_magician.reverse import _is_out_variant
 from decomp_magician.tree import DecompNode, build_tree, op_display_name
 
 
-def compute_stats(compile: bool = False) -> dict:
+class StatsResult(NamedTuple):
+    total: int
+    total_non_out: int
+    by_type: dict[str, int]
+    inductor_kept: int
+    traceable: int
+    untraceable: int
+    leaf_ops: Counter[str]
+    deepest: list[tuple[str, int]]
+
+
+def compute_stats(compile: bool = False) -> StatsResult:
     """Compute statistics across all decomposable ops.
 
-    Returns a dict with:
-        total: total ops in decomposition table
-        by_type: {"table": n, "both": n, ...}
-        inductor_kept: count of inductor-kept ops
-        traceable: count of ops that trace successfully
-        untraceable: count of ops that fail tracing
-        leaf_ops: Counter of leaf op appearances across all decompositions
-        deepest: list of (op_name, depth) for deepest decomposition chains
+    Invariant: traceable + untraceable == total_non_out.
     """
     from torch._decomp import decomposition_table
 
@@ -29,7 +34,6 @@ def compute_stats(compile: bool = False) -> dict:
     inductor_kept = 0
     traceable = 0
     untraceable = 0
-    classify_errors = 0
     leaf_ops: Counter[str] = Counter()
     depths: list[tuple[str, int]] = []
 
@@ -41,7 +45,6 @@ def compute_stats(compile: bool = False) -> dict:
         try:
             cls = classify(op)
         except (AttributeError, Exception):
-            classify_errors += 1
             continue
 
         by_type[cls.decomp_type] += 1
@@ -69,16 +72,16 @@ def compute_stats(compile: bool = False) -> dict:
 
     non_out_total = sum(by_type.values())
 
-    return {
-        "total": len(all_ops),
-        "total_non_out": non_out_total,
-        "by_type": dict(by_type),
-        "inductor_kept": inductor_kept,
-        "traceable": traceable,
-        "untraceable": untraceable,
-        "leaf_ops": leaf_ops,
-        "deepest": depths[:10],
-    }
+    return StatsResult(
+        total=len(all_ops),
+        total_non_out=non_out_total,
+        by_type=dict(by_type),
+        inductor_kept=inductor_kept,
+        traceable=traceable,
+        untraceable=untraceable,
+        leaf_ops=leaf_ops,
+        deepest=depths[:10],
+    )
 
 
 def _tree_depth(node: DecompNode) -> int:

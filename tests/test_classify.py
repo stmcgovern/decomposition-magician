@@ -91,5 +91,5 @@ class TestTags:
     def test_tags_are_strings(self):
         op = torch.ops.aten.add.Tensor
         cls = classify(op)
-        assert isinstance(cls.tags, list)
+        assert isinstance(cls.tags, tuple)
         assert all(isinstance(t, str) for t in cls.tags)
