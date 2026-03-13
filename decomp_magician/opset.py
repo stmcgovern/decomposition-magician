@@ -14,30 +14,24 @@ from decomp_magician.tree import DecompNode, build_tree, op_display_name
 OPSETS = ("core_aten",)
 
 
-def _core_aten_ops() -> set[str]:
-    """Return the set of op names that are in core ATen (i.e. NOT decomposed further).
+def _build_core_aten_decomposed() -> set[str]:
+    """Return the set of op names that have core ATen decompositions.
 
-    An op is "core ATen" if it is NOT in the core_aten_decompositions table —
-    meaning it is a target op that backends must implement directly.
+    These are NOT core ATen ops — they decompose into core ops.
+    An op is "core ATen" if it is NOT in this set.
     """
     from torch._decomp import core_aten_decompositions
 
-    decomposed = core_aten_decompositions()
-    # Build a set of names that ARE decomposed (non-core)
-    decomposed_names: set[str] = set()
-    for op in decomposed:
-        decomposed_names.add(op_display_name(op))
-    return decomposed_names
+    return {op_display_name(op) for op in core_aten_decompositions()}
 
 
-# Cached decomposed set (ops that are NOT core)
 _core_aten_decomposed: set[str] | None = None
 
 
 def _get_core_aten_decomposed() -> set[str]:
     global _core_aten_decomposed
     if _core_aten_decomposed is None:
-        _core_aten_decomposed = _core_aten_ops()
+        _core_aten_decomposed = _build_core_aten_decomposed()
     return _core_aten_decomposed
 
 
@@ -78,22 +72,16 @@ def check_opset_coverage(
         raise ValueError(f"Unknown opset: {opset!r}. Supported: {', '.join(OPSETS)}")
 
     node = build_tree(op, depth=depth, compile=compile)
-    op_name = op_display_name(op)
 
     # Collect leaf frontier
     leaf_counts: Counter[str] = Counter()
     _collect_leaves(node, leaf_counts)
 
-    if opset == "core_aten":
-        checker = is_core_aten
-    else:
-        raise ValueError(f"Unknown opset: {opset!r}")
-
     covered = 0
     non_covered: list[tuple[str, int]] = []
 
     for name, count in leaf_counts.most_common():
-        if checker(name):
+        if is_core_aten(name):
             covered += count
         else:
             non_covered.append((name, count))
@@ -101,7 +89,7 @@ def check_opset_coverage(
     total = sum(leaf_counts.values())
 
     return OpsetCoverage(
-        op=op_name,
+        op=op_display_name(op),
         opset=opset,
         fully_covered=len(non_covered) == 0,
         total_leaves=total,
