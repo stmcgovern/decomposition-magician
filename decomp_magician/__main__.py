@@ -7,9 +7,17 @@ import json
 import os
 import sys
 from collections import Counter
+from dataclasses import dataclass
 from typing import NamedTuple
 
 from decomp_magician.diff import compute_diff
+from decomp_magician.dispatch import (
+    DispatchInfo,
+    format_dispatch_detail,
+    format_dispatch_short,
+    get_dispatch_info,
+    get_dispatch_info_cached,
+)
 from decomp_magician.graph import format_dot, format_mermaid
 from decomp_magician.opset import OPSETS, check_opset_coverage
 from decomp_magician.resolve import resolve_op
@@ -28,6 +36,10 @@ _YELLOW = "\033[33m"
 
 # Whether color is currently enabled
 _use_color = False
+
+# Whether to show dispatch table info in annotations
+_show_dispatch = False
+_show_mode_sensitivity = False
 
 
 def _should_use_color() -> bool:
@@ -92,6 +104,10 @@ def _format_annotation(node: DecompNode) -> str:
     if cls.inductor_kept:
         parts.append(_c(_YELLOW, "inductor-kept"))
 
+    # Mutable
+    if cls.is_mutable:
+        parts.append(_c(_RED, "mutable"))
+
     # Traceability
     if not node.traceable:
         parts.append(_c(_RED, "untraceable"))
@@ -101,6 +117,19 @@ def _format_annotation(node: DecompNode) -> str:
     # Show brief explanation for untraceable ops
     if not node.traceable and node.classification.decomp_type != "leaf":
         annotation += "  " + _c(_DIM, "(has decomposition, could not trace)")
+
+    # Dispatch table info
+    if _show_dispatch or _show_mode_sensitivity:
+        dinfo = get_dispatch_info_cached(node.op)
+        if _show_dispatch:
+            annotation += "  " + _c(_DIM, f"({format_dispatch_short(dinfo)})")
+        if _show_mode_sensitivity:
+            if dinfo.has_adiov:
+                annotation += "  " + _c(_RED, "ADIOV")
+            if dinfo.mode_sensitive:
+                annotation += "  " + _c(_YELLOW, "mode-sensitive")
+            else:
+                annotation += "  " + _c(_GREEN, "mode-invariant")
 
     # DTensor strategy (outside brackets)
     if cls.dtensor_strategy is not None:
@@ -112,6 +141,166 @@ def _format_annotation(node: DecompNode) -> str:
             annotation += "  " + _c(_RED, "dtensor: MISSING")
 
     return annotation
+
+
+_BLUE = "\033[34m"
+_MAGENTA = "\033[35m"
+
+
+@dataclass
+class PurityResult:
+    """Purity analysis of a decomposition tree."""
+    op: str
+    is_pure: bool  # no mutable or ADIOV leaves
+    total_leaves: int
+    mutable_leaves: list[tuple[str, int]]  # (op_name, count)
+    adiov_leaves: list[tuple[str, int]]  # (op_name, count) — leaves with ADIOV kernel
+    mode_sensitive_leaves: list[tuple[str, int]]  # leaves with non-FT autograd
+
+
+@dataclass
+class _LeafInfo:
+    name: str
+    count: int
+    is_mutable: bool
+    has_adiov: bool
+    mode_sensitive: bool
+
+
+def _analyze_purity(node: DecompNode) -> PurityResult:
+    """Analyze purity of a decomposition tree."""
+    leaf_infos: dict[str, _LeafInfo] = {}
+
+    def walk(n: DecompNode, multiplier: int = 1) -> None:
+        if len(n.children) == 0:
+            name = op_display_name(n.op)
+            if name not in leaf_infos:
+                dinfo = get_dispatch_info_cached(n.op)
+                leaf_infos[name] = _LeafInfo(
+                    name=name,
+                    count=0,
+                    is_mutable=n.classification.is_mutable,
+                    has_adiov=dinfo.has_adiov,
+                    mode_sensitive=dinfo.mode_sensitive,
+                )
+            leaf_infos[name].count += multiplier
+            return
+        for c in n.children:
+            walk(c, multiplier * c.count)
+
+    walk(node)
+
+    mutable = [(li.name, li.count) for li in leaf_infos.values() if li.is_mutable]
+    adiov = [(li.name, li.count) for li in leaf_infos.values() if li.has_adiov]
+    ms = [(li.name, li.count) for li in leaf_infos.values() if li.mode_sensitive]
+    is_pure = len(mutable) == 0 and len(adiov) == 0
+
+    return PurityResult(
+        op=op_display_name(node.op),
+        is_pure=is_pure,
+        total_leaves=len(leaf_infos),
+        mutable_leaves=sorted(mutable, key=lambda x: -x[1]),
+        adiov_leaves=sorted(adiov, key=lambda x: -x[1]),
+        mode_sensitive_leaves=sorted(ms, key=lambda x: -x[1]),
+    )
+
+
+def _filter_adiov_paths(node: DecompNode) -> DecompNode | None:
+    """Filter tree to only include paths that reach ADIOV-bearing ops.
+
+    Returns None if no path reaches an ADIOV op.
+    """
+    from dataclasses import replace as dc_replace
+
+    # Leaf node: keep only if it has ADIOV
+    if len(node.children) == 0:
+        dinfo = get_dispatch_info_cached(node.op)
+        return node if dinfo.has_adiov else None
+
+    # Internal node: filter children recursively
+    kept_children = []
+    for child in node.children:
+        filtered = _filter_adiov_paths(child)
+        if filtered is not None:
+            kept_children.append(filtered)
+
+    if not kept_children:
+        return None
+
+    return dc_replace(node, children=tuple(kept_children))
+
+
+def format_purity(result: PurityResult) -> str:
+    """Format purity analysis result."""
+    lines = []
+    if result.is_pure:
+        lines.append(_c(_GREEN, "PURE") + f"  {result.op}")
+        lines.append(f"  All {result.total_leaves} leaf ops are non-mutable with no ADIOV kernel.")
+        lines.append(f"  Behavior under inference_mode vs no_grad: " + _c(_GREEN, "identical"))
+    else:
+        lines.append(_c(_RED, "IMPURE") + f"  {result.op}")
+        lines.append(f"  {result.total_leaves} leaf ops total")
+
+        if result.mutable_leaves:
+            lines.append("")
+            lines.append(_c(_BOLD, "Mutable leaves") + " (in-place operations):")
+            for name, count in result.mutable_leaves:
+                has_adiov = any(n == name for n, _ in result.adiov_leaves)
+                marker = "  " + _c(_RED, "[ADIOV]") if has_adiov else ""
+                lines.append(f"  {name}  x{count}{marker}")
+
+        if result.adiov_leaves:
+            non_mutable_adiov = [(n, c) for n, c in result.adiov_leaves
+                                 if not any(mn == n for mn, _ in result.mutable_leaves)]
+            if non_mutable_adiov:
+                lines.append("")
+                lines.append(_c(_BOLD, "Non-mutable ADIOV leaves") + ":")
+                for name, count in non_mutable_adiov:
+                    lines.append(f"  {name}  x{count}")
+
+        if result.mode_sensitive_leaves:
+            lines.append("")
+            lines.append(f"  Leaves differing under inference_mode vs no_grad: " +
+                         _c(_RED, f"{len(result.mode_sensitive_leaves)}"))
+            lines.append(f"  These leaves have autograd/ADIOV kernels whose dispatch")
+            lines.append(f"  path changes depending on the active gradient mode.")
+
+    return "\n".join(lines)
+
+
+def _enrich_leaves_with_dispatch(d: dict, node: DecompNode) -> dict:
+    """Add dispatch info to leaves JSON output."""
+    # Build a map of leaf names to dispatch info
+    leaf_dispatch: dict[str, DispatchInfo] = {}
+
+    def walk(n: DecompNode):
+        if len(n.children) == 0:
+            name = op_display_name(n.op)
+            if name not in leaf_dispatch:
+                leaf_dispatch[name] = get_dispatch_info_cached(n.op)
+            return
+        for c in n.children:
+            walk(c)
+
+    walk(node)
+
+    for leaf in d.get("leaves", []):
+        dinfo = leaf_dispatch.get(leaf["op"])
+        if dinfo:
+            leaf["autograd_type"] = dinfo.autograd_type
+            leaf["has_adiov"] = dinfo.has_adiov
+            leaf["mode_sensitive"] = dinfo.mode_sensitive
+    return d
+
+
+def _enrich_tree_with_dispatch(d: dict, node: DecompNode) -> None:
+    """Add dispatch info to tree JSON output (in-place)."""
+    dinfo = get_dispatch_info_cached(node.op)
+    d["autograd_type"] = dinfo.autograd_type
+    d["has_adiov"] = dinfo.has_adiov
+    d["mode_sensitive"] = dinfo.mode_sensitive
+    for child_dict, child_node in zip(d.get("children", []), node.children):
+        _enrich_tree_with_dispatch(child_dict, child_node)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -200,14 +389,36 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Disable colored output",
     )
+    parser.add_argument(
+        "--dispatch-table",
+        action="store_true",
+        help="Annotate each op with its dispatch table entries (AutogradCPU, ADInplaceOrView, CPU)",
+    )
+    parser.add_argument(
+        "--mode-sensitivity",
+        action="store_true",
+        help="Show which ops behave differently under inference_mode vs no_grad",
+    )
+    parser.add_argument(
+        "--adiov",
+        action="store_true",
+        help="Filter tree to only paths reaching ops with ADInplaceOrView kernels",
+    )
+    parser.add_argument(
+        "--pure",
+        action="store_true",
+        help="Check if decomposition is pure (no mutable or ADIOV leaves)",
+    )
     args = parser.parse_args(argv)
 
     # Initialize color
-    global _use_color
+    global _use_color, _show_dispatch, _show_mode_sensitivity
     if args.no_color or args.json:
         _use_color = False
     else:
         _use_color = _should_use_color()
+    _show_dispatch = args.dispatch_table
+    _show_mode_sensitivity = args.mode_sensitivity
 
     # Stats mode — no op argument needed
     if args.stats:
@@ -278,11 +489,47 @@ def main(argv: list[str] | None = None) -> int:
     # Build and print the tree
     node = build_tree(op, depth=args.depth, dtensor=args.dtensor, compile=args.compile)
 
+    # --pure: purity analysis
+    if args.pure:
+        purity = _analyze_purity(node)
+        if args.json:
+            json_data = {
+                "op": purity.op,
+                "pure": purity.is_pure,
+                "total_leaves": purity.total_leaves,
+                "mutable_leaves": [{"op": n, "count": c} for n, c in purity.mutable_leaves],
+                "adiov_leaves": [{"op": n, "count": c} for n, c in purity.adiov_leaves],
+                "mode_sensitive_leaves": [{"op": n, "count": c} for n, c in purity.mode_sensitive_leaves],
+            }
+            print(json.dumps(json_data, indent=2))
+        else:
+            print(format_purity(purity))
+        return 0
+
+    # --adiov: filter to ADIOV paths only
+    if args.adiov:
+        filtered = _filter_adiov_paths(node)
+        if filtered is None:
+            root_name = op_display_name(node.op)
+            if args.json:
+                print(json.dumps({"op": root_name, "adiov_paths": False, "message": "no ADIOV leaves"}))
+            else:
+                print(f"{_c(_GREEN, 'NO ADIOV PATHS')}  {root_name}")
+                print("  No decomposition path reaches an op with an ADInplaceOrView kernel.")
+            return 0
+        node = filtered
+
     if args.json:
         if args.leaves:
-            print(json.dumps(_leaves_to_dict(node), indent=2))
+            d = _leaves_to_dict(node)
+            if _show_dispatch or _show_mode_sensitivity:
+                d = _enrich_leaves_with_dispatch(d, node)
+            print(json.dumps(d, indent=2))
         else:
-            print(json.dumps(tree_to_dict(node), indent=2))
+            d = tree_to_dict(node)
+            if _show_dispatch or _show_mode_sensitivity:
+                _enrich_tree_with_dispatch(d, node)
+            print(json.dumps(d, indent=2))
         return 0
 
     if args.mermaid:
@@ -641,6 +888,19 @@ def format_leaves(node: DecompNode) -> str:
 
     lf = _collect_leaf_frontier(node)
 
+    # Collect dispatch info for leaves if needed
+    leaf_dispatch: dict[str, DispatchInfo] = {}
+    if _show_dispatch or _show_mode_sensitivity:
+        def _walk_for_dispatch(n: DecompNode):
+            if len(n.children) == 0:
+                name = op_display_name(n.op)
+                if name not in leaf_dispatch:
+                    leaf_dispatch[name] = get_dispatch_info_cached(n.op)
+                return
+            for c in n.children:
+                _walk_for_dispatch(c)
+        _walk_for_dispatch(node)
+
     lines = []
     name_width = max(len(name) for name in lf.counts)
     for name, count in lf.counts.most_common():
@@ -649,6 +909,15 @@ def format_leaves(node: DecompNode) -> str:
             tags.append(_c(_YELLOW, "inductor-kept"))
         if name in lf.untraceable:
             tags.append(_c(_RED, "untraceable"))
+        # Dispatch info
+        dinfo = leaf_dispatch.get(name)
+        if dinfo and _show_dispatch:
+            tags.append(_c(_DIM, format_dispatch_short(dinfo)))
+        if dinfo and _show_mode_sensitivity:
+            if dinfo.has_adiov:
+                tags.append(_c(_RED, "ADIOV"))
+            if dinfo.mode_sensitive:
+                tags.append(_c(_YELLOW, "mode-sensitive"))
         tag_str = "  [" + ", ".join(tags) + "]" if tags else ""
         lines.append(f"  {name:<{name_width}}  x{count}{tag_str}")
 
@@ -775,6 +1044,11 @@ def _print_verbose(node: DecompNode, indent: int = 0) -> None:
         print(f"{prefix}  inductor_kept: True")
     if node.error:
         print(f"{prefix}  error: {node.error}")
+    # Always show dispatch info in verbose mode
+    dinfo = get_dispatch_info_cached(node.op)
+    print(f"{prefix}  autograd_type: {dinfo.autograd_type}")
+    print(f"{prefix}  has_adiov: {dinfo.has_adiov}")
+    print(f"{prefix}  mode_sensitive: {dinfo.mode_sensitive}")
     for child in node.children:
         _print_verbose(child, indent + 1)
 

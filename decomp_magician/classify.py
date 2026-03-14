@@ -17,6 +17,8 @@ class OpClass:
     has_alias_info: bool = False
     inductor_kept: bool = False
     dtensor_strategy: str | None = None  # "registered", "decomp-fallback", "missing"
+    autograd_type: str | None = None  # "autograd_kernel", "math_kernel", etc.
+    has_adiov: bool | None = None  # non-fallthrough ADInplaceOrView kernel
 
     def __post_init__(self):
         if self.has_backend is None:
@@ -109,8 +111,23 @@ def _get_dtensor_strategy(op: OpOverload) -> str:
         return "missing"
 
 
-def classify(op: OpOverload, dtensor: bool = False) -> OpClass:
-    """Classify an op's decomposition type, backend support, and properties."""
+def classify(op: OpOverload, dtensor: bool = False, dispatch: bool = False) -> OpClass:
+    """Classify an op's decomposition type, backend support, and properties.
+
+    Args:
+        op: The operator to classify.
+        dtensor: If True, check DTensor sharding strategy.
+        dispatch: If True, populate autograd_type and has_adiov fields
+                  from the dispatch table (requires _dispatch_dump_table).
+    """
+    autograd_type = None
+    has_adiov = None
+    if dispatch:
+        from decomp_magician.dispatch import get_dispatch_info
+        dinfo = get_dispatch_info(op)
+        autograd_type = dinfo.autograd_type
+        has_adiov = dinfo.has_adiov
+
     return OpClass(
         decomp_type=_get_decomp_type(op),
         has_backend=_get_backends(op),
@@ -121,4 +138,6 @@ def classify(op: OpOverload, dtensor: bool = False) -> OpClass:
         ),
         inductor_kept=op.name() in _build_inductor_kept(),
         dtensor_strategy=_get_dtensor_strategy(op) if dtensor else None,
+        autograd_type=autograd_type,
+        has_adiov=has_adiov,
     )
