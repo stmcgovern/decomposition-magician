@@ -7,7 +7,7 @@ from dataclasses import dataclass
 
 from torch._ops import OpOverload
 
-from decomp_magician.tree import DecompNode, build_tree, op_display_name
+from decomp_magician.tree import build_tree, collect_leaf_counts, op_display_name
 
 
 @dataclass(frozen=True)
@@ -31,8 +31,8 @@ def compute_diff(
     compile_node = build_tree(op, depth=depth, compile=True)
 
     return _diff_trees(
-        _collect_leaf_counts(full_node),
-        _collect_leaf_counts(compile_node),
+        collect_leaf_counts(full_node),
+        collect_leaf_counts(compile_node),
         left_label=f"{op_display_name(op)}  (full)",
         right_label=f"{op_display_name(op)}  (compile)",
     )
@@ -50,8 +50,8 @@ def compute_diff_ops(
 
     mode = "compile" if compile else "full"
     return _diff_trees(
-        _collect_leaf_counts(left_node),
-        _collect_leaf_counts(right_node),
+        collect_leaf_counts(left_node),
+        collect_leaf_counts(right_node),
         left_label=f"{op_display_name(left)}  ({mode})",
         right_label=f"{op_display_name(right)}  ({mode})",
     )
@@ -91,16 +91,3 @@ def _diff_trees(
     )
 
 
-def _collect_leaf_counts(node: DecompNode) -> Counter[str]:
-    """Collect leaf ops with propagated counts."""
-    counter: Counter[str] = Counter()
-
-    def walk(n: DecompNode, multiplier: int = 1) -> None:
-        if not n.children:
-            counter[op_display_name(n.op)] += multiplier
-            return
-        for c in n.children:
-            walk(c, multiplier * c.count)
-
-    walk(node)
-    return counter

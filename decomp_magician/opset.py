@@ -2,12 +2,11 @@
 
 from __future__ import annotations
 
-from collections import Counter
 from dataclasses import dataclass
 
 from torch._ops import OpOverload
 
-from decomp_magician.tree import DecompNode, build_tree, op_display_name
+from decomp_magician.tree import build_tree, collect_leaf_counts, op_display_name
 
 
 # Supported target opsets
@@ -42,13 +41,27 @@ def is_core_aten(op_name: str) -> bool:
 
 @dataclass(frozen=True)
 class OpsetCoverage:
-    """Result of checking an op's decomposition against a target opset."""
+    """Result of checking an op's decomposition against a target opset.
+
+    Invariant: covered_leaves + sum(non_covered counts) == total_leaves.
+    """
     op: str
     opset: str
-    fully_covered: bool
-    total_leaves: int
     covered_leaves: int
-    non_covered: list[tuple[str, int]]  # (op_name, count) for non-covered leaves
+    non_covered: tuple[tuple[str, int], ...]  # (op_name, count) for non-covered leaves
+
+    def __post_init__(self):
+        nc_total = sum(c for _, c in self.non_covered)
+        if self.covered_leaves < 0 or nc_total < 0:
+            raise ValueError("Leaf counts must be non-negative")
+
+    @property
+    def total_leaves(self) -> int:
+        return self.covered_leaves + sum(c for _, c in self.non_covered)
+
+    @property
+    def fully_covered(self) -> bool:
+        return len(self.non_covered) == 0
 
 
 def check_opset_coverage(
@@ -72,10 +85,7 @@ def check_opset_coverage(
         raise ValueError(f"Unknown opset: {opset!r}. Supported: {', '.join(OPSETS)}")
 
     node = build_tree(op, depth=depth, compile=compile)
-
-    # Collect leaf frontier
-    leaf_counts: Counter[str] = Counter()
-    _collect_leaves(node, leaf_counts)
+    leaf_counts = collect_leaf_counts(node)
 
     covered = 0
     non_covered: list[tuple[str, int]] = []
@@ -86,22 +96,9 @@ def check_opset_coverage(
         else:
             non_covered.append((name, count))
 
-    total = sum(leaf_counts.values())
-
     return OpsetCoverage(
         op=op_display_name(op),
         opset=opset,
-        fully_covered=len(non_covered) == 0,
-        total_leaves=total,
         covered_leaves=covered,
-        non_covered=non_covered,
+        non_covered=tuple(non_covered),
     )
-
-
-def _collect_leaves(node: DecompNode, counter: Counter[str], multiplier: int = 1) -> None:
-    """Collect leaf ops with propagated counts."""
-    if not node.children:
-        counter[op_display_name(node.op)] += multiplier
-        return
-    for c in node.children:
-        _collect_leaves(c, counter, multiplier * c.count)

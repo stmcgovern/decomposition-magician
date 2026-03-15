@@ -446,25 +446,18 @@ def main(argv: list[str] | None = None) -> int:
         print("Run with --help for all options.", file=sys.stderr)
         return 1
 
-    # Validate flag combinations
-    # --mermaid, --dot, --leaves, --reverse, --target-opset, --diff are mutually exclusive output modes
-    # --json combines with --leaves, --reverse, --target-opset, --diff but not --mermaid/--dot
-    # --target-opset can combine with --leaves (annotates leaf ops)
-    # but other output modes are mutually exclusive
-    exclusive_modes = sum([
-        args.mermaid, args.dot,
-        args.leaves and not args.target_opset,
-        args.reverse,
-        bool(args.target_opset) and not args.leaves,
-        bool(args.diff),
-    ])
-    if exclusive_modes > 1:
-        conflicting = [f for f, v in [
-            ("--mermaid", args.mermaid), ("--dot", args.dot),
-            ("--leaves", args.leaves), ("--reverse", args.reverse),
-            ("--target-opset", bool(args.target_opset)), ("--diff", bool(args.diff)),
-        ] if v]
-        print(f"Conflicting flags: {', '.join(conflicting)} (pick one)", file=sys.stderr)
+    # Validate flag combinations.
+    # These output modes are mutually exclusive, EXCEPT --leaves + --target-opset.
+    active_modes = [f for f, v in [
+        ("--mermaid", args.mermaid), ("--dot", args.dot),
+        ("--leaves", args.leaves), ("--reverse", args.reverse),
+        ("--target-opset", bool(args.target_opset)), ("--diff", bool(args.diff)),
+    ] if v]
+    # Allow the one permitted combination
+    if set(active_modes) == {"--leaves", "--target-opset"}:
+        pass  # this pair is allowed
+    elif len(active_modes) > 1:
+        print(f"Conflicting flags: {', '.join(active_modes)} (pick one)", file=sys.stderr)
         return 1
     if args.json and (args.mermaid or args.dot):
         flag = "--mermaid" if args.mermaid else "--dot"

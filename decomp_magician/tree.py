@@ -31,6 +31,25 @@ class DecompNode:
     error: str | None = None
 
 
+def collect_leaf_counts(node: DecompNode) -> Counter[str]:
+    """Collect leaf ops with propagated counts.
+
+    Each leaf's count is the product of all ancestor counts on its path,
+    reflecting how many times the leaf appears in a full expansion.
+    """
+    counter: Counter[str] = Counter()
+
+    def walk(n: DecompNode, multiplier: int = 1) -> None:
+        if not n.children:
+            counter[op_display_name(n.op)] += multiplier
+            return
+        for c in n.children:
+            walk(c, multiplier * c.count)
+
+    walk(node)
+    return counter
+
+
 class _RecordingMode(TorchDispatchMode):
     """Records all OpOverload calls during decomposition tracing."""
 

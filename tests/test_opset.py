@@ -26,7 +26,7 @@ class TestCheckOpsetCoverage:
         assert cov.fully_covered
         assert cov.total_leaves > 0
         assert cov.covered_leaves == cov.total_leaves
-        assert cov.non_covered == []
+        assert cov.non_covered == ()
 
     def test_opset_field(self):
         op = torch.ops.aten.addcmul.default
