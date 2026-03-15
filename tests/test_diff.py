@@ -1,11 +1,79 @@
 """Tests for diff mode."""
 
 import json
+from collections import Counter
 
 import torch
 
-from decomp_magician.diff import compute_diff, compute_diff_ops
+from decomp_magician.diff import DecompDiff, compute_diff, compute_diff_ops
 from decomp_magician.__main__ import main
+
+
+class TestDecompDiffProperties:
+    """Test the derived properties of DecompDiff with synthetic data.
+
+    The set-arithmetic in added/removed/changed is the logical core of
+    the diff feature. These tests construct known Counters and verify
+    exact outputs — no PyTorch dependency, no circularity.
+    """
+
+    def test_added_is_right_only(self):
+        d = DecompDiff(
+            left_label="L", right_label="R",
+            left_leaves=Counter({"a": 2, "b": 1}),
+            right_leaves=Counter({"a": 2, "c": 3}),
+        )
+        assert dict(d.added) == {"c": 3}
+
+    def test_removed_is_left_only(self):
+        d = DecompDiff(
+            left_label="L", right_label="R",
+            left_leaves=Counter({"a": 2, "b": 1}),
+            right_leaves=Counter({"a": 2, "c": 3}),
+        )
+        assert dict(d.removed) == {"b": 1}
+
+    def test_changed_is_shared_with_different_counts(self):
+        d = DecompDiff(
+            left_label="L", right_label="R",
+            left_leaves=Counter({"a": 2, "b": 5}),
+            right_leaves=Counter({"a": 7, "b": 5}),
+        )
+        assert d.changed == [("a", 2, 7)]
+
+    def test_same_counters_produce_no_diff(self):
+        c = Counter({"x": 3, "y": 1})
+        d = DecompDiff(left_label="L", right_label="R",
+                       left_leaves=c, right_leaves=c.copy())
+        assert not d.added
+        assert not d.removed
+        assert not d.changed
+
+    def test_empty_counters(self):
+        d = DecompDiff(left_label="L", right_label="R",
+                       left_leaves=Counter(), right_leaves=Counter())
+        assert not d.added
+        assert not d.removed
+        assert not d.changed
+
+    def test_disjoint_counters(self):
+        d = DecompDiff(
+            left_label="L", right_label="R",
+            left_leaves=Counter({"a": 1, "b": 2}),
+            right_leaves=Counter({"c": 3, "d": 4}),
+        )
+        assert dict(d.removed) == {"a": 1, "b": 2}
+        assert dict(d.added) == {"c": 3, "d": 4}
+        assert d.changed == []
+
+    def test_changed_excludes_equal_counts(self):
+        """Ops present in both with SAME count must NOT appear in changed."""
+        d = DecompDiff(
+            left_label="L", right_label="R",
+            left_leaves=Counter({"a": 5, "b": 3}),
+            right_leaves=Counter({"a": 5, "b": 7}),
+        )
+        assert d.changed == [("b", 3, 7)]  # a excluded because counts equal
 
 
 class TestComputeDiff:

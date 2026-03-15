@@ -2,35 +2,54 @@
 
 import json
 
+import pytest
+import torch
+
 from decomp_magician.__main__ import main, format_tree, format_leaves, format_summary, tree_to_dict
 from decomp_magician.tree import build_tree
 
-import torch
-
 
 class TestMain:
-    def test_basic_op(self):
+    def test_basic_op(self, capsys):
         assert main(["addcmul"]) == 0
+        out = capsys.readouterr().out
+        assert "aten.addcmul.default" in out
+        assert "[table" in out
 
-    def test_leaf_op(self):
+    def test_leaf_op(self, capsys):
         assert main(["mm"]) == 0
+        out = capsys.readouterr().out
+        assert "aten.mm.default" in out
+        assert "[leaf" in out
 
-    def test_depth_limit(self):
+    def test_depth_limit(self, capsys):
         assert main(["_native_batch_norm_legit", "--depth", "1"]) == 0
+        out = capsys.readouterr().out
+        assert "squeeze.dims" in out
+        assert "x3" in out
 
-    def test_verbose(self):
+    def test_verbose_shows_schema(self, capsys):
         assert main(["addcmul", "--verbose", "--depth", "0"]) == 0
+        out = capsys.readouterr().out
+        assert "schema:" in out
+        assert "decomp_type:" in out
+        assert "autograd_type:" in out
 
     def test_nonexistent_op(self, capsys):
         assert main(["zzz_nonexistent_zzz"]) == 1
         captured = capsys.readouterr()
         assert "No ops found" in captured.err
 
-    def test_fully_qualified(self):
+    def test_fully_qualified(self, capsys):
         assert main(["aten.addcmul.default"]) == 0
+        out = capsys.readouterr().out
+        assert "addcmul" in out
 
-    def test_compile_flag(self):
+    def test_compile_flag(self, capsys):
         assert main(["_native_batch_norm_legit", "--compile"]) == 0
+        out = capsys.readouterr().out
+        # In compile mode, inductor-kept ops are leaves — they should appear
+        assert "inductor-kept" in out
 
     def test_conflicting_flags(self, capsys):
         assert main(["addcmul", "--mermaid", "--leaves"]) == 1
@@ -49,6 +68,155 @@ class TestMain:
 
     def test_json_leaves_allowed(self, capsys):
         assert main(["addcmul", "--json", "--leaves"]) == 0
+
+    def test_no_args_shows_usage(self, capsys):
+        assert main([]) == 1
+        captured = capsys.readouterr()
+        assert "Usage:" in captured.err
+        assert "Examples:" in captured.err
+        assert "--help" in captured.err
+
+
+class TestDispatchFlags:
+    def test_dispatch_table_flag(self, capsys):
+        assert main(["addcmul", "--dispatch-table", "--depth", "0"]) == 0
+        out = capsys.readouterr().out
+        # addcmul has an autograd kernel → AG:redispatch
+        assert "AG:" in out
+
+    def test_mode_sensitivity_flag(self, capsys):
+        assert main(["addcmul", "--mode-sensitivity", "--depth", "0"]) == 0
+        out = capsys.readouterr().out
+        # addcmul has autograd kernel → mode-sensitive
+        assert "mode-sensitive" in out or "mode-invariant" in out
+
+    def test_dispatch_table_leaves_json(self, capsys):
+        """--dispatch-table with --leaves --json should add dispatch fields."""
+        assert main(["addcmul", "--dispatch-table", "--leaves", "--json"]) == 0
+        data = json.loads(capsys.readouterr().out)
+        for leaf in data["leaves"]:
+            assert "has_adiov" in leaf
+            assert "mode_sensitive" in leaf
+
+
+class TestPurityFlag:
+    def test_pure_flag_text(self, capsys):
+        assert main(["addcmul", "--pure", "--no-color"]) == 0
+        out = capsys.readouterr().out
+        assert "PURE" in out or "IMPURE" in out
+        # Should say how many leaf ops
+        assert "leaf" in out.lower()
+
+    def test_pure_json_structure(self, capsys):
+        assert main(["addcmul", "--pure", "--json"]) == 0
+        data = json.loads(capsys.readouterr().out)
+        assert isinstance(data["pure"], bool)
+        assert isinstance(data["total_leaves"], int)
+        assert isinstance(data["mutable_leaves"], list)
+        assert isinstance(data["adiov_leaves"], list)
+        assert isinstance(data["mode_sensitive_leaves"], list)
+
+    def test_mutable_op_is_impure(self, capsys):
+        """batch_norm has copy_ (mutable) → must be IMPURE."""
+        assert main(["_native_batch_norm_legit", "--pure", "--json"]) == 0
+        data = json.loads(capsys.readouterr().out)
+        assert data["pure"] is False
+        assert len(data["mutable_leaves"]) > 0
+        mutable_names = [m["op"] for m in data["mutable_leaves"]]
+        assert any("copy_" in n for n in mutable_names)
+
+
+class TestADIOVFlag:
+    def test_adiov_has_paths(self, capsys):
+        """addcmul decomposes through expand (ADIOV=True) → has ADIOV paths."""
+        assert main(["addcmul", "--adiov", "--no-color"]) == 0
+        out = capsys.readouterr().out
+        # Filtered tree should contain expand (the ADIOV-bearing leaf)
+        assert "expand" in out
+
+    def test_adiov_no_paths(self, capsys):
+        """sigmoid decomposes to prims ops with no ADIOV → no ADIOV paths."""
+        assert main(["sigmoid", "--adiov", "--no-color"]) == 0
+        out = capsys.readouterr().out
+        assert "NO ADIOV PATHS" in out
+
+    def test_adiov_no_paths_json(self, capsys):
+        assert main(["sigmoid", "--adiov", "--json"]) == 0
+        data = json.loads(capsys.readouterr().out)
+        assert data["adiov_paths"] is False
+        assert "no ADIOV" in data["message"]
+
+    def test_adiov_has_paths_json(self, capsys):
+        assert main(["addcmul", "--adiov", "--json"]) == 0
+        data = json.loads(capsys.readouterr().out)
+        # Should be a tree dict (has children), not the no-paths message
+        assert "op" in data
+        assert "children" in data or "adiov_paths" not in data
+
+
+class TestModelFlag:
+    """Tests for --model analysis mode.
+
+    Creates a trivially exported model (relu + add) to test the full
+    model analysis path: load → walk graph → format output.
+    """
+
+    @pytest.fixture
+    def tiny_model_path(self, tmp_path):
+        """Export a trivial model: relu(x) + 1.0"""
+        import warnings
+
+        class TinyModel(torch.nn.Module):
+            def forward(self, x):
+                return torch.relu(x) + 1.0
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            ep = torch.export.export(TinyModel(), (torch.randn(2, 3),))
+            path = tmp_path / "tiny.pt2"
+            torch.export.save(ep, str(path))
+        return str(path)
+
+    def test_model_text_output(self, tiny_model_path, capsys):
+        assert main(["--model", tiny_model_path, "--no-color"]) == 0
+        out = capsys.readouterr().out
+        assert "Model analysis" in out
+        assert "Unique ops:" in out
+        # The model contains relu and add.Tensor
+        assert "relu" in out
+        assert "add" in out
+
+    def test_model_json(self, tiny_model_path, capsys):
+        assert main(["--model", tiny_model_path, "--json"]) == 0
+        data = json.loads(capsys.readouterr().out)
+        assert data["total_ops"] >= 2
+        assert data["unique_ops"] >= 2
+        op_names = [o["op"] for o in data["ops"]]
+        assert any("relu" in n for n in op_names)
+        assert any("add" in n for n in op_names)
+
+    def test_model_target_opset(self, tiny_model_path, capsys):
+        """--model --target-opset should decompose then list final ops."""
+        assert main(["--model", tiny_model_path, "--target-opset", "core_aten", "--no-color"]) == 0
+        out = capsys.readouterr().out
+        assert "core_aten" in out
+        assert "must implement" in out
+
+    def test_model_target_opset_json(self, tiny_model_path, capsys):
+        assert main(["--model", tiny_model_path, "--target-opset", "core_aten", "--json"]) == 0
+        data = json.loads(capsys.readouterr().out)
+        assert data["opset"] == "core_aten"
+        assert data["decomposed"] is True
+
+    def test_model_nonexistent_file(self, capsys):
+        assert main(["--model", "/nonexistent/path.pt2"]) == 1
+        assert "Failed to load" in capsys.readouterr().err
+
+    def test_model_without_opset_shows_decomposable(self, tiny_model_path, capsys):
+        """Without --target-opset, model mode should show [decomposable] or [leaf]."""
+        assert main(["--model", tiny_model_path, "--no-color"]) == 0
+        out = capsys.readouterr().out
+        assert "[decomposable]" in out or "[leaf]" in out
 
 
 class TestFormatTree:
@@ -162,28 +330,20 @@ class TestColor:
     def test_color_rendering(self):
         """When color is on, output should contain ANSI codes."""
         import decomp_magician.__main__ as m
-        old = m._use_color
-        try:
-            m._use_color = True
-            node = build_tree(torch.ops.aten.addcmul.default, depth=1)
-            output = format_tree(node)
-            assert "\033[" in output  # has ANSI codes
-            assert "\033[1m" in output  # bold for decomposable ops
-            assert "\033[33m" in output  # yellow for inductor-kept
-        finally:
-            m._use_color = old
+        m._use_color = True
+        node = build_tree(torch.ops.aten.addcmul.default, depth=1)
+        output = format_tree(node)
+        assert "\033[" in output  # has ANSI codes
+        assert "\033[1m" in output  # bold for decomposable ops
+        assert "\033[33m" in output  # yellow for inductor-kept
 
     def test_color_leaf_dim(self):
         """Leaf ops should be dim when color is on."""
         import decomp_magician.__main__ as m
-        old = m._use_color
-        try:
-            m._use_color = True
-            node = build_tree(torch.ops.aten.mm.default)
-            output = format_tree(node)
-            assert "\033[2m" in output  # dim for leaf
-        finally:
-            m._use_color = old
+        m._use_color = True
+        node = build_tree(torch.ops.aten.mm.default)
+        output = format_tree(node)
+        assert "\033[2m" in output  # dim for leaf
 
 
 class TestJson:

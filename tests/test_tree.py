@@ -2,7 +2,7 @@
 
 import torch
 
-from decomp_magician.tree import build_tree, _trace_decomp, _make_meta_args
+from decomp_magician.tree import build_tree, collect_leaf_counts, _trace_decomp, _make_meta_args
 
 
 class TestTraceDecomp:
@@ -184,3 +184,36 @@ class TestBuildTree:
         for child in compiled.children:
             if child.classification.inductor_kept:
                 assert len(child.children) == 0
+
+
+class TestCollectLeafCounts:
+    def test_leaf_op_returns_self(self):
+        op = torch.ops.aten.mm.default
+        node = build_tree(op)
+        counts = collect_leaf_counts(node)
+        assert counts["aten.mm.default"] == 1
+        assert len(counts) == 1
+
+    def test_addcmul_prims_mul_count(self):
+        """addcmul = self + value * (t1 * t2) → prims.mul should appear 3x."""
+        op = torch.ops.aten.addcmul.default
+        node = build_tree(op)
+        counts = collect_leaf_counts(node)
+        assert counts["prims.mul.default"] == 3
+        assert counts["prims.add.default"] == 1
+
+    def test_matches_manual_walk(self):
+        """collect_leaf_counts should match a manual walk."""
+        from collections import Counter
+        from decomp_magician.tree import op_display_name
+
+        op = torch.ops.aten._native_batch_norm_legit.default
+        node = build_tree(op, depth=1)
+
+        # Manual walk
+        manual: Counter[str] = Counter()
+        for c in node.children:
+            manual[op_display_name(c.op)] += c.count
+
+        auto = collect_leaf_counts(node)
+        assert auto == manual

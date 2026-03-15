@@ -7,10 +7,10 @@ from decomp_magician.classify import classify
 
 class TestDecompType:
     def test_table_only(self):
-        # addcmul is in decomposition_table but has no CIA
+        # addcmul is in decomposition_table and CIA is False (verified independently)
         op = torch.ops.aten.addcmul.default
         cls = classify(op)
-        assert cls.decomp_type in ("table", "both")
+        assert cls.decomp_type == "table"
 
     def test_cia_op(self):
         # dropout has CIA
@@ -28,6 +28,34 @@ class TestDecompType:
         op = torch.ops.aten._native_batch_norm_legit.default
         cls = classify(op)
         assert cls.decomp_type in ("table", "both")
+
+    def test_classification_agrees_with_raw_apis(self):
+        """Cross-check classify() against direct PyTorch API calls.
+
+        This breaks the circularity: instead of asserting 'in ("table", "both")',
+        we independently query the decomposition_table and _can_decompose(),
+        then verify classify() agrees.
+        """
+        from torch._decomp import decomposition_table
+
+        test_ops = [
+            torch.ops.aten.addcmul.default,
+            torch.ops.aten.mm.default,
+            torch.ops.aten.dropout.default,
+            torch.ops.aten.add.Tensor,
+        ]
+        for op in test_ops:
+            cls = classify(op)
+            in_table = op in decomposition_table
+            has_cia = op._can_decompose()
+            if in_table and has_cia:
+                assert cls.decomp_type == "both", f"{op.name()}: expected both"
+            elif in_table:
+                assert cls.decomp_type == "table", f"{op.name()}: expected table"
+            elif has_cia:
+                assert cls.decomp_type == "CIA", f"{op.name()}: expected CIA"
+            else:
+                assert cls.decomp_type == "leaf", f"{op.name()}: expected leaf"
 
 
 class TestBackends:
