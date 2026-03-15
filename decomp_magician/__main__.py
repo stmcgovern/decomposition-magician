@@ -433,7 +433,18 @@ def main(argv: list[str] | None = None) -> int:
 
     # All other modes require an op
     if args.op is None:
-        parser.error("the following arguments are required: op")
+        print("Usage: decomp_magician <op> [options]", file=sys.stderr)
+        print("", file=sys.stderr)
+        print("Examples:", file=sys.stderr)
+        print("  decomp_magician addcmul                  # decomposition tree", file=sys.stderr)
+        print("  decomp_magician batch_norm --compile      # compile-mode tree", file=sys.stderr)
+        print("  decomp_magician softmax --diff            # full vs compile diff", file=sys.stderr)
+        print("  decomp_magician addcmul --target-opset core_aten", file=sys.stderr)
+        print("  decomp_magician --stats                   # bulk statistics", file=sys.stderr)
+        print("  decomp_magician --model model.pt2 --target-opset core_aten", file=sys.stderr)
+        print("", file=sys.stderr)
+        print("Run with --help for all options.", file=sys.stderr)
+        return 1
 
     # Validate flag combinations
     # --mermaid, --dot, --leaves, --reverse, --target-opset, --diff are mutually exclusive output modes
@@ -863,9 +874,12 @@ def _run_model(args) -> int:
 
     # Collect all aten ops from the graph
     op_counts: Counter[str] = Counter()
+    op_objects: dict[str, torch._ops.OpOverload] = {}
     for node in ep.graph.nodes:
         if node.op == "call_function" and isinstance(node.target, torch._ops.OpOverload):
-            op_counts[op_display_name(node.target)] += 1
+            name = op_display_name(node.target)
+            op_counts[name] += 1
+            op_objects[name] = node.target
 
     if not op_counts:
         print("No ATen ops found in the model graph.", file=sys.stderr)
@@ -899,13 +913,29 @@ def _run_model(args) -> int:
     ]
 
     name_width = max(len(n) for n in op_counts)
-    for name, count in op_counts.most_common():
-        lines.append(f"  {name:<{name_width}}  x{count}")
 
     if args.target_opset:
+        for name, count in op_counts.most_common():
+            lines.append(f"  {name:<{name_width}}  x{count}")
         lines.append("")
         lines.append(
             _c(_DIM, f"These are the ops a {args.target_opset} backend must implement for this model.")
+        )
+    else:
+        # Show decomposition status per op
+        from torch._decomp import decomposition_table
+        decomposable = 0
+        for name, count in op_counts.most_common():
+            op_obj = op_objects.get(name)
+            has_decomp = op_obj is not None and op_obj in decomposition_table
+            tag = _c(_YELLOW, "[decomposable]") if has_decomp else _c(_DIM, "[leaf]")
+            lines.append(f"  {name:<{name_width}}  x{count}  {tag}")
+            if has_decomp:
+                decomposable += 1
+        lines.append("")
+        lines.append(
+            f"  {decomposable}/{len(op_counts)} ops have decompositions. "
+            f"Use --target-opset core_aten to decompose and show final ops."
         )
 
     print("\n".join(lines))
