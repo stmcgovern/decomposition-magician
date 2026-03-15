@@ -433,6 +433,86 @@ def _try_trace(decomp_fn, args, kwargs) -> tuple[OpOverload, ...] | str:
     return tuple(recorder.ops)
 
 
+def trace_backward(op: OpOverload) -> tuple[OpOverload, ...] | str:
+    """Run the op forward, then backward, recording ops dispatched during backward.
+
+    Uses small CPU tensors with requires_grad=True. Returns a tuple of ops
+    called during the backward pass, or an error string.
+    """
+    schema = op._schema
+
+    # Build small real tensors for forward
+    args = []
+    for arg in schema.arguments:
+        if arg.kwarg_only:
+            break
+        val = _make_backward_arg(arg)
+        if val is _SENTINEL:
+            return f"cannot create backward args: unsupported arg '{arg.name}' ({arg.type})"
+        args.append(val)
+
+    kwargs = {}
+    for arg in schema.arguments:
+        if not arg.kwarg_only:
+            continue
+        val = _make_backward_arg(arg)
+        if val is _SENTINEL:
+            return f"cannot create backward kwargs: unsupported kwarg '{arg.name}' ({arg.type})"
+        kwargs[arg.name] = val
+
+    # Run forward (no recording)
+    try:
+        result = op(*args, **kwargs)
+    except Exception as e:
+        return f"forward failed: {type(e).__name__}: {e}"
+
+    # Find a scalar output to call backward on
+    if isinstance(result, torch.Tensor):
+        out = result
+    elif isinstance(result, (tuple, list)):
+        candidates = [t for t in result if isinstance(t, torch.Tensor) and t.requires_grad]
+        if not candidates:
+            return "no differentiable tensor output"
+        out = candidates[0]
+    else:
+        return f"unsupported output type: {type(result)}"
+
+    if not out.requires_grad:
+        return "output does not require grad"
+
+    # Reduce to scalar for backward
+    scalar_out = out.sum()
+
+    # Record ops during backward
+    recorder = _RecordingMode()
+    try:
+        with recorder:
+            scalar_out.backward()
+    except Exception as e:
+        return f"backward failed: {type(e).__name__}: {e}"
+
+    return tuple(recorder.ops)
+
+
+def _make_backward_arg(arg):
+    """Create a small CPU tensor arg suitable for backward tracing."""
+    type_str = str(arg.type)
+    kind = arg.type.kind()
+
+    if kind == "TensorType":
+        return torch.randn([2, 3], requires_grad=True)
+
+    if kind == "OptionalType":
+        if "Tensor" in type_str:
+            return torch.randn([2, 3], requires_grad=True)
+        if arg.default_value is not None:
+            return arg.default_value
+        return None
+
+    # Delegate non-tensor args to the standard maker
+    return _make_arg(arg)
+
+
 def build_tree(
     op: OpOverload,
     depth: int = -1,

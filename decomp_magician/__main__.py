@@ -23,7 +23,7 @@ from decomp_magician.opset import OPSETS, check_opset_coverage
 from decomp_magician.resolve import resolve_op
 from decomp_magician.reverse import reverse_lookup
 from decomp_magician.stats import compute_stats
-from decomp_magician.tree import DecompNode, build_tree, op_display_name
+from decomp_magician.tree import DecompNode, build_tree, op_display_name, trace_backward
 
 
 # ANSI color codes
@@ -412,6 +412,11 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Check if decomposition is pure (no mutable or ADIOV leaves)",
     )
+    parser.add_argument(
+        "--backward",
+        action="store_true",
+        help="Show ops dispatched during the backward pass (gradient computation)",
+    )
     args = parser.parse_args(argv)
 
     # Initialize color
@@ -497,6 +502,10 @@ def main(argv: list[str] | None = None) -> int:
     # Diff mode
     if args.diff:
         return _run_diff(op, args)
+
+    # Backward mode
+    if args.backward:
+        return _run_backward(op, args)
 
     # Build and print the tree
     node = build_tree(op, depth=args.depth, dtensor=args.dtensor, compile=args.compile)
@@ -847,6 +856,50 @@ def _run_diff(op, args) -> int:
             delta = rc - lc
             direction = _c(_GREEN, f"+{delta}") if delta > 0 else _c(_RED, str(delta))
             lines.append(f"  {_c(_YELLOW, '~')} {name}  x{lc} -> x{rc}  ({direction})")
+
+    print("\n".join(lines))
+    return 0
+
+
+def _run_backward(op, args) -> int:
+    """Show ops dispatched during backward pass."""
+    from collections import Counter
+
+    result = trace_backward(op)
+    name = op_display_name(op)
+
+    if isinstance(result, str):
+        if args.json:
+            print(json.dumps({"op": name, "backward": None, "error": result}))
+        else:
+            print(f"{_c(_BOLD, name)}  backward")
+            print(f"  {_c(_RED, 'error')}: {result}")
+        return 1
+
+    op_counts: Counter[str] = Counter()
+    for child_op in result:
+        op_counts[op_display_name(child_op)] += 1
+
+    if args.json:
+        print(json.dumps({
+            "op": name,
+            "backward": [
+                {"op": n, "count": c} for n, c in op_counts.most_common()
+            ],
+            "total_instances": len(result),
+        }, indent=2))
+        return 0
+
+    lines = [_c(_BOLD, name) + "  backward"]
+    if not op_counts:
+        lines.append("  (no ops recorded during backward)")
+    else:
+        name_width = max(len(n) for n in op_counts)
+        for child_name, count in op_counts.most_common():
+            count_str = f"  x{count}" if count > 1 else ""
+            lines.append(f"  {child_name:<{name_width}}{count_str}")
+        total = sum(op_counts.values())
+        lines.append(f"\n{len(op_counts)} unique ops, {total} total instances")
 
     print("\n".join(lines))
     return 0
