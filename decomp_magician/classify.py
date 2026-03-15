@@ -89,12 +89,31 @@ def _get_tags(op: OpOverload) -> tuple[str, ...]:
     return tuple(str(t).split(".")[-1] for t in op.tags)
 
 
+_dtensor_propagator = None
+
+
+def _get_dtensor_propagator():
+    """Get DTensor's actual ShardingPropagator with all strategies registered."""
+    global _dtensor_propagator
+    if _dtensor_propagator is not None:
+        return _dtensor_propagator
+    try:
+        # Import DTensor ops to trigger strategy registration
+        import torch.distributed.tensor._ops  # noqa: F401
+        from torch.distributed.tensor import DTensor
+
+        _dtensor_propagator = DTensor._op_dispatcher.sharding_propagator
+    except (ImportError, AttributeError, RuntimeError):
+        # Fallback: empty propagator (no strategies will match)
+        from torch.distributed.tensor._sharding_prop import ShardingPropagator
+        _dtensor_propagator = ShardingPropagator()
+    return _dtensor_propagator
+
+
 def _get_dtensor_strategy(op: OpOverload) -> str:
     """Check DTensor sharding strategy registration status."""
     try:
-        from torch.distributed.tensor._sharding_prop import ShardingPropagator
-
-        prop = ShardingPropagator()
+        prop = _get_dtensor_propagator()
         if op in prop.op_strategy_funcs:
             return "registered"
         if op in prop.op_single_dim_strategy_funcs:
