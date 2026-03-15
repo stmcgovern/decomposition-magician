@@ -1,42 +1,52 @@
 # decomposition-magician
 
-Inspect PyTorch operator decomposition trees from the command line.
+Answer questions about PyTorch operator decompositions from the command line.
 
-PyTorch has ~1300 decomposable operators spread across two mechanisms (CompositeImplicitAutograd kernels and explicit decomposition tables), but no built-in way to see what a given op decomposes into. This tool fills that gap.
+- *What ops does `batch_norm` actually compile to?*
+- *Which primitive ops does my backend need to implement?*
+- *Does this op decompose fully to core ATen?*
+- *Which ops produce `squeeze.dims` as a child?*
+
+PyTorch has 1000+ decomposable operators spread across two mechanisms (CompositeImplicitAutograd kernels and explicit decomposition tables). The decompositions are recursive and the metadata is scattered. This tool traces them automatically, classifies every op, and shows the result.
+
+```mermaid
+graph TD
+    n0([aten.softmax.int])
+    n1([aten._softmax.default])
+    n0 --> n1
+    n2([aten.amax.default])
+    n1 --> n2
+    n3[prims.amax.default]
+    n2 --> n3
+    n4["aten.sub.Tensor<br/>(inductor-kept)"]
+    n1 --> n4
+    n5["aten.exp.default<br/>(inductor-kept)"]
+    n1 --> n5
+    n6["aten.sum.dim_IntList<br/>(inductor-kept)"]
+    n1 --> n6
+    n7["aten.div.Tensor<br/>(inductor-kept)"]
+    n1 --> n7
+
+    classDef leaf fill:#f5f5f5,stroke:#999,color:#666
+    classDef decomposed fill:#d4edda,stroke:#28a745,color:#155724
+    classDef kept fill:#fff3cd,stroke:#ffc107,color:#856404
+    class n0,n1,n2 decomposed
+    class n3 leaf
+    class n4,n5,n6,n7 kept
+```
+<sub><code>decomp-magician softmax --compile --mermaid</code> — green = decomposed, yellow = inductor-kept (terminal for torch.compile), gray = leaf</sub>
 
 ## Install
 
 ```
-pip install .
+pip install git+https://github.com/stmcgovern/decomposition-magician.git
 ```
 
-## Quick start
-
-```
-$ decomp-magician addcmul
-
-aten.addcmul.default  [table, inductor-kept]
-├── aten.mul.Tensor  [table, inductor-kept]  x2
-│   └── prims.mul.default  [leaf]
-└── aten.add.Tensor  [table]
-    ├── prims.mul.default  [leaf]
-    └── prims.add.default  [leaf]
-
-6 ops (3 table, 3 leaf) · 2 inductor-kept
-```
-
-Op names are resolved flexibly — you don't need the full qualified name:
-
-```
-decomp-magician addcmul               # bare name
-decomp-magician aten.addcmul.default  # fully qualified
-decomp-magician "aten::addcmul"       # C++ format (from error messages)
-decomp-magician batch_norm            # substring match
-```
+Requires Python 3.10+ and PyTorch 2.0+.
 
 ## What does torch.compile actually run?
 
-The most common question: "if I compile this op, what hits the backend?" Use `--compile --leaves`:
+The most common question. Use `--compile --leaves` to see the flat set of ops that hit the backend:
 
 ```
 $ decomp-magician _native_batch_norm_legit --compile --leaves
@@ -54,30 +64,64 @@ aten._native_batch_norm_legit.default decomposes to:
 9 unique ops, 27 total instances
 ```
 
-`--compile` treats inductor-kept ops as leaves (Inductor has direct lowerings for these, so it doesn't decompose them further). `--leaves` shows the flat frontier with propagated counts instead of the tree.
+`--compile` treats inductor-kept ops as leaves (Inductor has direct lowerings for these). `--leaves` shows the flat frontier with propagated counts.
 
-Note: the tool traces decompositions using PyTorch's raw `decomposition_table`. The leaf frontier under `--compile` is correct, but the intermediate decomposition path may differ for ops where Inductor uses custom decompositions.
+## Decomposition trees
 
-## Reverse lookup
+Without `--leaves`, you get the full recursive tree — useful for understanding *why* an op produces what it does:
 
-"Which ops decompose into `squeeze.dims`?" Use `--reverse`:
+```
+$ decomp-magician softmax
 
+aten.softmax.int  [CIA]
+└── aten._softmax.default  [table]
+    ├── aten.amax.default  [table]
+    │   └── prims.amax.default  [leaf]
+    ├── aten.sub.Tensor  [table, inductor-kept]
+    │   ├── aten.expand.default  [table, inductor-kept, untraceable]
+    │   └── prims.sub.default  [leaf]
+    ├── aten.exp.default  [table, inductor-kept]
+    │   └── prims.exp.default  [leaf]
+    ├── aten.sum.dim_IntList  [table, inductor-kept]
+    │   └── prims.sum.default  [leaf]
+    └── aten.div.Tensor  [table, inductor-kept]
+        ├── aten.expand.default  [table, inductor-kept, untraceable]
+        └── prims.div.default  [leaf]
+
+14 ops (8 table, 1 CIA, 5 leaf) · 6 inductor-kept · 2 untraceable
+```
+
+Op names are resolved flexibly — bare names, fully qualified, C++ format (`aten::addcmul`), or substring match.
+
+### Annotations
+
+| Annotation | Meaning |
+|---|---|
+| `[table]` | Explicit decomposition in `decomposition_table` |
+| `[CIA]` | CompositeImplicitAutograd kernel |
+| `[both]` | Has both table and CIA decompositions |
+| `[leaf]` | No decomposition; terminal op |
+| `inductor-kept` | Inductor uses a direct lowering instead of decomposing |
+| `untraceable` | Decomposition exists but could not be traced on meta tensors |
+
+## More examples
+
+**Reverse lookup** — which ops produce a given child op?
 ```
 $ decomp-magician aten.squeeze.dims --reverse --depth 1
-
-Scanning decomposition table for ops that produce aten.squeeze.dims...
-4 ops decompose into aten.squeeze.dims (full decomposition):
-  aten._native_batch_norm_legit.default  x3  (at depth 1)
-  aten._native_batch_norm_legit.no_stats  x3  (at depth 1)
-  ...
 ```
 
-This scans all ~730 decomposable ops and reports which ones produce the target. Use `--depth 1` to check only direct children, or unlimited (default) for transitive producers.
+**Diff** — what changes between full and compile mode?
+```
+$ decomp-magician softmax --diff
+```
 
-## Bulk statistics
+**Opset coverage** — does this op decompose fully to core ATen?
+```
+$ decomp-magician addcmul --target-opset core_aten
+```
 
-Get an overview of the entire decomposition table:
-
+**Bulk statistics** — overview of the entire decomposition table:
 ```
 $ decomp-magician --stats
 
@@ -94,87 +138,63 @@ Top leaf ops  (most common across all decompositions):
   prims.mul.default     197  ███████████████████
   aten.copy_.default    182  ██████████████████
   ...
-
-Deepest decomposition chains:
-  aten._safe_softmax.default                          depth 5
-  aten.dist.default                                   depth 5
-  ...
 ```
 
-Use `--stats --compile` to see the compile-mode view, or `--stats --json` for machine-readable output.
-
-## Graph export
-
-Export decomposition trees as diagrams:
-
+**Model analysis** — which ops does an exported model use?
 ```
-$ decomp-magician addcmul --mermaid    # Mermaid flowchart (paste into GitHub markdown)
-$ decomp-magician addcmul --dot        # Graphviz DOT (pipe to: dot -Tsvg > graph.svg)
+$ decomp-magician --model model.pt2 --target-opset core_aten
 ```
 
-Both formats use color-coding: gray=leaf, green=decomposed, yellow=inductor-kept, red=untraceable.
-
-## Understanding the tree
-
-To see *why* an op decomposes the way it does, use the tree view:
-
+**Graph export** — Mermaid or Graphviz diagrams:
 ```
-$ decomp-magician _native_batch_norm_legit --depth 1
-
-aten._native_batch_norm_legit.default  [table]
-├── aten.var_mean.correction  [table, inductor-kept]
-├── aten.add.Tensor           [table]  x4
-├── aten.rsqrt.default        [table, inductor-kept]
-├── aten.sub.Tensor           [table, inductor-kept]
-├── aten.mul.Tensor           [table, inductor-kept]  x7
-├── aten.squeeze.dims         [table, inductor-kept]  x3
-├── aten.copy_.default        [leaf]  x2
-└── aten.unsqueeze.default    [table, inductor-kept]  x4
-
-9 ops (8 table, 1 leaf) · 6 inductor-kept
+$ decomp-magician softmax --mermaid    # paste into GitHub markdown
+$ decomp-magician softmax --dot        # pipe to: dot -Tsvg > graph.svg
 ```
-
-### Annotations
-
-Each op is classified:
-
-- `[table]` — explicit decomposition in `torch._decomp.decomposition_table`
-- `[CIA]` — CompositeImplicitAutograd kernel
-- `[both]` — has both table and CIA decompositions (table takes precedence)
-- `[leaf]` — no decomposition; runs as a fused kernel
-- `inductor-kept` — Inductor skips this decomposition and uses a direct lowering
-- `untraceable` — decomposition exists but could not be traced on meta tensors
 
 ## Flags
 
+**Core:**
+
 | Flag | Description |
 |------|-------------|
-| `--depth N` | Maximum recursion depth (-1 for unlimited, default) |
 | `--compile` | Treat inductor-kept ops as leaves |
-| `--leaves` | Show flat leaf frontier with propagated counts |
-| `--reverse` | Reverse lookup: find all ops that decompose into the given op |
-| `--include-out` | Include `_out` variant ops in `--reverse` results |
-| `--stats` | Show statistics across all decomposable ops (no op argument needed) |
-| `--mermaid` | Output as Mermaid flowchart (renders in GitHub markdown) |
-| `--dot` | Output as Graphviz DOT graph |
-| `--dtensor` | Show DTensor sharding strategy coverage per op |
-| `--json` | Output as JSON (combines with `--leaves`, `--reverse`, `--stats`) |
-| `--verbose` | Show full classification details (backends, tags, schema) |
-| `--no-color` | Disable colored output (auto-detected; respects `NO_COLOR`) |
+| `--leaves` | Show flat leaf frontier instead of tree |
+| `--depth N` | Maximum recursion depth (-1 = unlimited, default) |
+| `--json` | Machine-readable output (combines with most modes) |
+| `--verbose` | Full classification details per op |
+| `--no-color` | Disable colored output (respects `NO_COLOR` env var) |
 
-## How it works
+**Analysis:**
 
-A decomposition maps an operator to a multiset of operators. Iterating this map produces a tree whose leaves are the primitive ops that actually execute. The tool computes this tree by:
+| Flag | Description |
+|------|-------------|
+| `--reverse` | Find all ops that decompose into the given op |
+| `--include-out` | Include `_out` variants in `--reverse` results |
+| `--diff [OP2]` | Compare full vs compile, or compare two ops |
+| `--stats` | Bulk statistics across all decomposable ops |
+| `--model PATH` | Analyze an exported `.pt2` model |
+| `--target-opset OPSET` | Check coverage against a target opset (e.g. `core_aten`) |
+| `--backward` | Show ops dispatched during the backward pass |
+| `--pure` | Check if decomposition is free of mutable/ADIOV ops |
 
-1. **Resolving** the user-provided name to an `OpOverload`
-2. **Tracing** the decomposition on meta tensors under a `TorchDispatchMode` that records all op calls (no real computation occurs)
-3. **Recursing** into each child op to build the full tree
-4. **Classifying** each node (decomposition source, Inductor status, backend support)
+**Export:**
 
-Trace results are cached per-op, so bulk operations (`--stats`, `--reverse`) that encounter the same op across many decomposition trees only trace it once.
+| Flag | Description |
+|------|-------------|
+| `--mermaid` | Export as Mermaid flowchart |
+| `--dot` | Export as Graphviz DOT graph |
+
+**Dispatch introspection:**
+
+| Flag | Description |
+|------|-------------|
+| `--dtensor` | Show DTensor sharding strategy coverage |
+| `--dispatch-table` | Show dispatch table entries per op |
+| `--mode-sensitivity` | Show ops that differ under `inference_mode` vs `no_grad` |
+| `--adiov` | Filter to paths reaching ADInplaceOrView ops |
 
 ## Limitations
 
-- ~26% of decomposable ops cannot be traced on meta tensors (shape mismatches, missing defaults, data-dependent control flow). These are marked `[untraceable]` and `--leaves` warns when the frontier is incomplete.
-- The tool uses the raw `decomposition_table`, not Inductor's table. Inductor has custom decompositions for ~111 ops that may produce different intermediate ops. The `--compile` flag correctly identifies which ops are terminal for Inductor, but the path to get there may differ.
-- Only the `aten` namespace is searched for substring matches. Ops in other namespaces (`prims`, `quantized`) require exact names.
+- About 26% of decomposable ops cannot be traced on meta tensors (shape mismatches, data-dependent control flow). These are marked `[untraceable]` and `--leaves` warns when the frontier is incomplete.
+- The tool uses the raw `decomposition_table`, not Inductor's internal table. The `--compile` flag correctly identifies terminal ops for Inductor, but the intermediate path may differ for the ~111 ops where Inductor uses custom decompositions.
+- Substring matching only searches the `aten` namespace. Ops in `prims`, `quantized`, etc. require exact names.
