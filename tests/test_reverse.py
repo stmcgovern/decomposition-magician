@@ -82,8 +82,7 @@ class TestReverseCliFlag:
         assert "decompose into" in captured.out
 
     def test_reverse_no_results(self, capsys):
-        # mm is a true primitive — nothing decomposes into it
-        assert main(["mm", "--reverse", "--depth", "1"]) == 0
+        assert main(["aten.sym_size.int", "--reverse", "--depth", "1"]) == 0
         captured = capsys.readouterr()
         assert "No ops" in captured.out
 

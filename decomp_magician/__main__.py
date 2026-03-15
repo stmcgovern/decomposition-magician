@@ -1003,6 +1003,7 @@ def tree_to_dict(node: DecompNode) -> dict:
     cls = node.classification
     d = {
         "op": op_display_name(node.op),
+        "schema": str(node.op._schema),
         "decomp_type": cls.decomp_type,
         "count": node.count,
         "inductor_kept": cls.inductor_kept,
@@ -1027,6 +1028,7 @@ def _print_verbose(node: DecompNode, indent: int = 0) -> None:
     cls = node.classification
     name = op_display_name(node.op)
     print(f"{prefix}{name}:")
+    print(f"{prefix}  schema: {node.op._schema}")
     print(f"{prefix}  decomp_type: {cls.decomp_type}")
     backends = ", ".join(k for k, v in cls.has_backend.items() if v)
     no_backends = ", ".join(k for k, v in cls.has_backend.items() if not v)

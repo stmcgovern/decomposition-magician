@@ -161,3 +161,22 @@ Only `core_aten` is supported today. Potential additions:
 - `inductor` — the ops torch.compile/inductor lowers directly
 - `onnx` — the ONNX export opset
 - `xla` — ops with XLA lowerings
+
+### Diff between overloads
+
+`--diff` currently compares full vs compile mode for a single op.
+A natural extension: compare decomposition trees of two different
+overloads, e.g. `decomp diff logsumexp.default logsumexp.dim_IntList`.
+
+### Autograd backward pass
+
+Currently shows only the forward decomposition tree. The backward
+pass has its own decomposition chain (e.g. `logsumexp_backward` →
+`unsqueeze_multiple` → `sub` → `exp` → `mul`). Surfacing both
+forward and backward trees would help autograd debugging.
+
+### Git-diff mode
+
+Compare decomposition trees before/after a code change:
+`decomp_magician logsumexp --git-diff HEAD~1`. Useful for validating
+PyTorch PRs that modify decomposition tables or schemas.

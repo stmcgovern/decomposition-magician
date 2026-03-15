@@ -37,11 +37,18 @@ def resolve_op(name: str) -> OpOverload | list[str]:
             return result
 
     # 3. Try with aten prefix: "addcmul" → "aten.addcmul"
+    #    Also handles "opname.overload" → "aten.opname.overload"
     if "." not in name:
         result = _try_packet("aten", name)
         if isinstance(result, OpOverload):
             return result
         if isinstance(result, list):
+            return result
+    elif name.count(".") == 1:
+        # Could be "opname.overload" (e.g. "logsumexp.dim_IntList")
+        opname, overload = name.split(".")
+        result = _try_exact(f"aten.{opname}.{overload}")
+        if result is not None:
             return result
 
     # 4. Substring search across aten namespace

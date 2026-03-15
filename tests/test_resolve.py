@@ -83,3 +83,23 @@ class TestSubstringSearch:
         result = resolve_op("addcm")
         assert isinstance(result, list)
         assert any("addcmul" in s for s in result)
+
+
+class TestDottedOverload:
+    def test_opname_dot_overload(self):
+        """'logsumexp.dim_IntList' should resolve to aten.logsumexp.dim_IntList."""
+        result = resolve_op("logsumexp.dim_IntList")
+        assert isinstance(result, OpOverload)
+        assert result is torch.ops.aten.logsumexp.dim_IntList
+
+    def test_add_tensor(self):
+        """'add.Tensor' should resolve to aten.add.Tensor."""
+        result = resolve_op("add.Tensor")
+        assert isinstance(result, OpOverload)
+        assert result is torch.ops.aten.add.Tensor
+
+    def test_softmax_int(self):
+        """'softmax.int' should resolve to aten.softmax.int."""
+        result = resolve_op("softmax.int")
+        assert isinstance(result, OpOverload)
+        assert result is torch.ops.aten.softmax.int
