@@ -8,7 +8,7 @@ import os
 import sys
 from collections import Counter
 from dataclasses import dataclass
-from typing import NamedTuple
+from typing import Callable, NamedTuple
 
 from decomp_magician.diff import compute_diff, compute_diff_ops
 from decomp_magician.dispatch import (
@@ -449,11 +449,16 @@ def main(argv: list[str] | None = None) -> int:
     # Validate flag combinations
     # --mermaid, --dot, --leaves, --reverse, --target-opset, --diff are mutually exclusive output modes
     # --json combines with --leaves, --reverse, --target-opset, --diff but not --mermaid/--dot
-    mode_flags = sum([
-        args.mermaid, args.dot, args.leaves, args.reverse,
-        bool(args.target_opset), bool(args.diff),
+    # --target-opset can combine with --leaves (annotates leaf ops)
+    # but other output modes are mutually exclusive
+    exclusive_modes = sum([
+        args.mermaid, args.dot,
+        args.leaves and not args.target_opset,
+        args.reverse,
+        bool(args.target_opset) and not args.leaves,
+        bool(args.diff),
     ])
-    if mode_flags > 1:
+    if exclusive_modes > 1:
         conflicting = [f for f, v in [
             ("--mermaid", args.mermaid), ("--dot", args.dot),
             ("--leaves", args.leaves), ("--reverse", args.reverse),
@@ -492,8 +497,8 @@ def main(argv: list[str] | None = None) -> int:
     if args.reverse:
         return _run_reverse(resolved_name, args)
 
-    # Target opset mode
-    if args.target_opset:
+    # Target opset mode (standalone, not combined with --leaves)
+    if args.target_opset and not args.leaves:
         return _run_opset(op, args)
 
     # Diff mode
@@ -538,6 +543,11 @@ def main(argv: list[str] | None = None) -> int:
             d = _leaves_to_dict(node)
             if _show_dispatch or _show_mode_sensitivity:
                 d = _enrich_leaves_with_dispatch(d, node)
+            if args.target_opset:
+                from decomp_magician.opset import is_core_aten
+                for leaf in d.get("leaves", []):
+                    leaf["in_opset"] = is_core_aten(leaf["op"])
+                d["opset"] = args.target_opset
             print(json.dumps(d, indent=2))
         else:
             d = tree_to_dict(node)
@@ -559,7 +569,11 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     if args.leaves:
-        print(format_leaves(node))
+        opset_checker = None
+        if args.target_opset:
+            from decomp_magician.opset import is_core_aten
+            opset_checker = (args.target_opset, is_core_aten)
+        print(format_leaves(node, opset_checker=opset_checker))
     else:
         print(format_tree(node))
         print()
@@ -970,7 +984,10 @@ def _collect_leaf_frontier(node: DecompNode) -> LeafFrontier:
     return LeafFrontier(frontier, inductor_kept_ops, untraceable_ops)
 
 
-def format_leaves(node: DecompNode) -> str:
+def format_leaves(
+    node: DecompNode,
+    opset_checker: tuple[str, Callable[[str], bool]] | None = None,
+) -> str:
     """Format the leaf frontier with propagated counts."""
     root_name = op_display_name(node.op)
 
@@ -1009,6 +1026,12 @@ def format_leaves(node: DecompNode) -> str:
                 tags.append(_c(_RED, "ADIOV"))
             if dinfo.mode_sensitive:
                 tags.append(_c(_YELLOW, "mode-sensitive"))
+        if opset_checker:
+            opset_name, checker_fn = opset_checker
+            if checker_fn(name):
+                tags.append(_c(_GREEN, opset_name))
+            else:
+                tags.append(_c(_RED, f"NOT {opset_name}"))
         tag_str = "  [" + ", ".join(tags) + "]" if tags else ""
         lines.append(f"  {name:<{name_width}}  x{count}{tag_str}")
 
