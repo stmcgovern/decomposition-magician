@@ -85,6 +85,30 @@ class TestSubstringSearch:
         assert any("addcmul" in s for s in result)
 
 
+class TestPrimsNamespace:
+    def test_bare_prims_name(self):
+        """'view_of' should resolve to prims.view_of.default."""
+        result = resolve_op("view_of")
+        assert isinstance(result, OpOverload)
+        assert result is torch.ops.prims.view_of.default
+
+    def test_prims_qualified(self):
+        result = resolve_op("prims.mul.default")
+        assert isinstance(result, OpOverload)
+        assert result is torch.ops.prims.mul.default
+
+    def test_prims_no_overload(self):
+        result = resolve_op("prims.mul")
+        assert isinstance(result, OpOverload)
+        assert result is torch.ops.prims.mul.default
+
+    def test_aten_wins_over_prims(self):
+        """When both aten and prims have the op, aten should win."""
+        result = resolve_op("abs")
+        assert isinstance(result, OpOverload)
+        assert "aten" in result.name()
+
+
 class TestDottedOverload:
     def test_opname_dot_overload(self):
         """'logsumexp.dim_IntList' should resolve to aten.logsumexp.dim_IntList."""

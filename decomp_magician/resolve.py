@@ -5,6 +5,9 @@ from __future__ import annotations
 import torch
 from torch._ops import OpOverload, OpOverloadPacket
 
+# Namespaces to search when resolving bare names
+_NAMESPACES = ("aten", "prims")
+
 
 def resolve_op(name: str) -> OpOverload | list[str]:
     """
@@ -13,7 +16,8 @@ def resolve_op(name: str) -> OpOverload | list[str]:
     Resolution order:
       1. Exact: "aten.addcmul.default" → direct lookup
       2. Default overload: "aten.addcmul" → try .default, then first overload
-      3. Namespace prefix: "addcmul" → try aten.addcmul
+      3. Namespace prefix: "addcmul" → try aten.addcmul, prims.addcmul
+         Also: "logsumexp.dim_IntList" → try aten.logsumexp.dim_IntList
       4. Substring search: "batch_norm" → list matching ops
 
     Returns the resolved OpOverload, or a list of candidate name strings
@@ -36,22 +40,24 @@ def resolve_op(name: str) -> OpOverload | list[str]:
         if isinstance(result, list):
             return result
 
-    # 3. Try with aten prefix: "addcmul" → "aten.addcmul"
+    # 3. Try with namespace prefix: "addcmul" → "aten.addcmul", "prims.addcmul"
     #    Also handles "opname.overload" → "aten.opname.overload"
     if "." not in name:
-        result = _try_packet("aten", name)
-        if isinstance(result, OpOverload):
-            return result
-        if isinstance(result, list):
-            return result
+        for ns in _NAMESPACES:
+            result = _try_packet(ns, name)
+            if isinstance(result, OpOverload):
+                return result
+            if isinstance(result, list):
+                return result
     elif name.count(".") == 1:
         # Could be "opname.overload" (e.g. "logsumexp.dim_IntList")
         opname, overload = name.split(".")
-        result = _try_exact(f"aten.{opname}.{overload}")
-        if result is not None:
-            return result
+        for ns in _NAMESPACES:
+            result = _try_exact(f"{ns}.{opname}.{overload}")
+            if result is not None:
+                return result
 
-    # 4. Substring search across aten namespace
+    # 4. Substring search across all namespaces
     return _substring_search(name)
 
 
@@ -105,18 +111,23 @@ def _try_packet(ns: str, opname: str) -> OpOverload | list[str] | None:
 
 
 def _substring_search(query: str) -> list[str]:
-    """Search aten namespace for ops whose qualified name contains the query."""
+    """Search all namespaces for ops whose qualified name contains the query."""
     query_lower = query.lower()
     matches = []
-    for attr_name in dir(torch.ops.aten):
+    for ns_name in _NAMESPACES:
         try:
-            packet = getattr(torch.ops.aten, attr_name)
-            if not isinstance(packet, OpOverloadPacket):
-                continue
-            for ol in packet.overloads():
-                full_name = f"aten.{attr_name}.{ol}"
-                if query_lower in full_name.lower():
-                    matches.append(full_name)
-        except (AttributeError, RuntimeError):
-            pass
+            ns = getattr(torch.ops, ns_name)
+        except AttributeError:
+            continue
+        for attr_name in dir(ns):
+            try:
+                packet = getattr(ns, attr_name)
+                if not isinstance(packet, OpOverloadPacket):
+                    continue
+                for ol in packet.overloads():
+                    full_name = f"{ns_name}.{attr_name}.{ol}"
+                    if query_lower in full_name.lower():
+                        matches.append(full_name)
+            except (AttributeError, RuntimeError):
+                pass
     return matches
