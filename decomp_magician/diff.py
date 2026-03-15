@@ -12,14 +12,38 @@ from decomp_magician.tree import build_tree, collect_leaf_counts, op_display_nam
 
 @dataclass(frozen=True)
 class DecompDiff:
-    """Diff between two decomposition trees."""
+    """Diff between two decomposition trees.
+
+    Only stores the two leaf counters and labels. The added/removed/changed
+    views are derived properties — no redundant state to go stale.
+    """
     left_label: str
     right_label: str
     left_leaves: Counter[str]
     right_leaves: Counter[str]
-    added: Counter[str]      # ops in right but not left
-    removed: Counter[str]    # ops in left but not right
-    changed: list[tuple[str, int, int]]  # (op, left_count, right_count) where counts differ
+
+    @property
+    def added(self) -> Counter[str]:
+        """Ops in right but not left."""
+        return Counter({n: c for n, c in self.right_leaves.items()
+                        if n not in self.left_leaves})
+
+    @property
+    def removed(self) -> Counter[str]:
+        """Ops in left but not right."""
+        return Counter({n: c for n, c in self.left_leaves.items()
+                        if n not in self.right_leaves})
+
+    @property
+    def changed(self) -> list[tuple[str, int, int]]:
+        """Ops present in both but with different counts."""
+        result = []
+        for name in sorted(set(self.left_leaves) & set(self.right_leaves)):
+            lc = self.left_leaves[name]
+            rc = self.right_leaves[name]
+            if lc != rc:
+                result.append((name, lc, rc))
+        return result
 
 
 def compute_diff(
@@ -30,11 +54,11 @@ def compute_diff(
     full_node = build_tree(op, depth=depth, compile=False)
     compile_node = build_tree(op, depth=depth, compile=True)
 
-    return _diff_trees(
-        collect_leaf_counts(full_node),
-        collect_leaf_counts(compile_node),
+    return DecompDiff(
         left_label=f"{op_display_name(op)}  (full)",
         right_label=f"{op_display_name(op)}  (compile)",
+        left_leaves=collect_leaf_counts(full_node),
+        right_leaves=collect_leaf_counts(compile_node),
     )
 
 
@@ -49,45 +73,9 @@ def compute_diff_ops(
     right_node = build_tree(right, depth=depth, compile=compile)
 
     mode = "compile" if compile else "full"
-    return _diff_trees(
-        collect_leaf_counts(left_node),
-        collect_leaf_counts(right_node),
+    return DecompDiff(
         left_label=f"{op_display_name(left)}  ({mode})",
         right_label=f"{op_display_name(right)}  ({mode})",
+        left_leaves=collect_leaf_counts(left_node),
+        right_leaves=collect_leaf_counts(right_node),
     )
-
-
-def _diff_trees(
-    left_leaves: Counter[str],
-    right_leaves: Counter[str],
-    left_label: str,
-    right_label: str,
-) -> DecompDiff:
-    """Compute diff between two leaf count sets."""
-    all_ops = set(left_leaves) | set(right_leaves)
-
-    added: Counter[str] = Counter()
-    removed: Counter[str] = Counter()
-    changed: list[tuple[str, int, int]] = []
-
-    for name in sorted(all_ops):
-        lc = left_leaves.get(name, 0)
-        rc = right_leaves.get(name, 0)
-        if lc == 0 and rc > 0:
-            added[name] = rc
-        elif lc > 0 and rc == 0:
-            removed[name] = lc
-        elif lc != rc:
-            changed.append((name, lc, rc))
-
-    return DecompDiff(
-        left_label=left_label,
-        right_label=right_label,
-        left_leaves=left_leaves,
-        right_leaves=right_leaves,
-        added=added,
-        removed=removed,
-        changed=changed,
-    )
-
-
