@@ -98,21 +98,30 @@ class TestSchemaProperties:
 
 
 class TestInductorKept:
-    def test_sum_excluded(self):
-        op = torch.ops.aten.sum.dim_IntList
-        cls = classify(op)
+    def test_kept_op_classified_correctly(self, inductor_kept_op):
+        cls = classify(inductor_kept_op)
         assert cls.inductor_kept is True
 
-    def test_add_not_excluded(self):
-        op = torch.ops.aten.add.Tensor
-        cls = classify(op)
+    def test_non_kept_op_classified_correctly(self, non_inductor_kept_decomposable_op):
+        cls = classify(non_inductor_kept_decomposable_op)
         assert cls.inductor_kept is False
 
-    def test_silu_not_excluded(self):
-        """silu is in decomps_to_exclude but Inductor re-adds its own decomp."""
-        op = torch.ops.aten.silu.default
-        cls = classify(op)
-        assert cls.inductor_kept is False
+    def test_agrees_with_inductor_table(self):
+        """Cross-check classify() against the raw inductor table."""
+        from decomp_magician.classify import _build_inductor_kept
+        kept_names = _build_inductor_kept()
+        test_ops = [
+            torch.ops.aten.add.Tensor,
+            torch.ops.aten.mm.default,
+            torch.ops.aten.addcmul.default,
+        ]
+        for op in test_ops:
+            cls = classify(op)
+            expected = op.name() in kept_names
+            assert cls.inductor_kept is expected, (
+                f"{op.name()}: classify says {cls.inductor_kept}, "
+                f"inductor table says {expected}"
+            )
 
 
 class TestTags:

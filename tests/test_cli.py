@@ -246,9 +246,8 @@ class TestFormatTree:
         assert "squeeze.dims" in output
         assert "x3" in output
 
-    def test_inductor_kept_annotation(self):
-        op = torch.ops.aten.addcmul.default
-        node = build_tree(op, depth=0)
+    def test_inductor_kept_annotation(self, inductor_kept_op):
+        node = build_tree(inductor_kept_op, depth=0)
         output = format_tree(node)
         assert "inductor-kept" in output
 

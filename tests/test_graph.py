@@ -31,8 +31,8 @@ class TestMermaid:
         assert "n0[aten.mm.default]" in output
         assert "classDef leaf" in output
 
-    def test_inductor_kept_class(self):
-        node = build_tree(torch.ops.aten.addcmul.default, depth=0)
+    def test_inductor_kept_class(self, inductor_kept_op):
+        node = build_tree(inductor_kept_op, depth=0)
         output = format_mermaid(node)
         assert "classDef kept" in output
         assert "class n0 kept" in output
@@ -123,8 +123,8 @@ class TestDot:
         output = format_dot(node)
         assert 'fillcolor="#f5f5f5"' in output
 
-    def test_inductor_kept_style(self):
-        node = build_tree(torch.ops.aten.addcmul.default, depth=0)
+    def test_inductor_kept_style(self, inductor_kept_op):
+        node = build_tree(inductor_kept_op, depth=0)
         output = format_dot(node)
         assert 'fillcolor="#fff3cd"' in output
 

@@ -110,11 +110,12 @@ class TestPrimsNamespace:
 
 
 class TestDottedOverload:
-    def test_opname_dot_overload(self):
-        """'logsumexp.dim_IntList' should resolve to aten.logsumexp.dim_IntList."""
-        result = resolve_op("logsumexp.dim_IntList")
+    def test_opname_dot_overload(self, dotted_overload_op):
+        """'name.overload' should resolve to the correct aten op."""
+        name, expected = dotted_overload_op
+        result = resolve_op(name)
         assert isinstance(result, OpOverload)
-        assert result is torch.ops.aten.logsumexp.dim_IntList
+        assert result is expected
 
     def test_add_tensor(self):
         """'add.Tensor' should resolve to aten.add.Tensor."""

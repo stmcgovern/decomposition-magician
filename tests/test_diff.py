@@ -77,14 +77,12 @@ class TestDecompDiffProperties:
 
 
 class TestComputeDiff:
-    def test_addcmul_has_differences(self):
-        """addcmul is inductor-kept, so compile mode stops earlier."""
-        op = torch.ops.aten.addcmul.default
-        diff = compute_diff(op)
-        assert "aten.addcmul.default" in diff.left_label
+    def test_inductor_kept_op_has_differences(self, inductor_kept_op):
+        """An inductor-kept op should differ between full and compile mode."""
+        diff = compute_diff(inductor_kept_op)
         assert "full" in diff.left_label
         assert "compile" in diff.right_label
-        # In compile mode, addcmul itself becomes a leaf (inductor-kept)
+        # In compile mode, inductor-kept ops become leaves
         assert len(diff.added) > 0 or len(diff.removed) > 0 or len(diff.changed) > 0
 
     def test_leaf_op_no_diff(self):
