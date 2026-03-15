@@ -105,16 +105,18 @@ def _try_packet(ns: str, opname: str) -> OpOverload | list[str] | None:
 
 
 def _substring_search(query: str) -> list[str]:
-    """Search aten namespace for ops whose name contains the query."""
+    """Search aten namespace for ops whose qualified name contains the query."""
     query_lower = query.lower()
     matches = []
     for attr_name in dir(torch.ops.aten):
-        if query_lower in attr_name.lower():
-            try:
-                packet = getattr(torch.ops.aten, attr_name)
-                if isinstance(packet, OpOverloadPacket):
-                    for ol in packet.overloads():
-                        matches.append(f"aten.{attr_name}.{ol}")
-            except (AttributeError, RuntimeError):
-                pass
+        try:
+            packet = getattr(torch.ops.aten, attr_name)
+            if not isinstance(packet, OpOverloadPacket):
+                continue
+            for ol in packet.overloads():
+                full_name = f"aten.{attr_name}.{ol}"
+                if query_lower in full_name.lower():
+                    matches.append(full_name)
+        except (AttributeError, RuntimeError):
+            pass
     return matches

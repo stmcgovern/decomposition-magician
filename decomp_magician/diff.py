@@ -1,4 +1,4 @@
-"""Diff mode: compare decomposition trees between modes."""
+"""Diff mode: compare decomposition trees between modes or overloads."""
 
 from __future__ import annotations
 
@@ -12,10 +12,9 @@ from decomp_magician.tree import DecompNode, build_tree, op_display_name
 
 @dataclass(frozen=True)
 class DecompDiff:
-    """Diff between two decomposition modes for a single op."""
-    op: str
-    left_mode: str
-    right_mode: str
+    """Diff between two decomposition trees."""
+    left_label: str
+    right_label: str
     left_leaves: Counter[str]
     right_leaves: Counter[str]
     added: Counter[str]      # ops in right but not left
@@ -27,43 +26,65 @@ def compute_diff(
     op: OpOverload,
     depth: int = -1,
 ) -> DecompDiff:
-    """Compare full vs compile decomposition for an op.
-
-    Args:
-        op: The operator to compare.
-        depth: Maximum decomposition depth (-1 for unlimited).
-
-    Returns:
-        DecompDiff showing what changes between full and compile modes.
-    """
+    """Compare full vs compile decomposition for an op."""
     full_node = build_tree(op, depth=depth, compile=False)
     compile_node = build_tree(op, depth=depth, compile=True)
 
-    full_leaves = _collect_leaf_counts(full_node)
-    compile_leaves = _collect_leaf_counts(compile_node)
+    return _diff_trees(
+        _collect_leaf_counts(full_node),
+        _collect_leaf_counts(compile_node),
+        left_label=f"{op_display_name(op)}  (full)",
+        right_label=f"{op_display_name(op)}  (compile)",
+    )
 
-    all_ops = set(full_leaves) | set(compile_leaves)
+
+def compute_diff_ops(
+    left: OpOverload,
+    right: OpOverload,
+    depth: int = -1,
+    compile: bool = False,
+) -> DecompDiff:
+    """Compare decomposition trees of two different ops."""
+    left_node = build_tree(left, depth=depth, compile=compile)
+    right_node = build_tree(right, depth=depth, compile=compile)
+
+    mode = "compile" if compile else "full"
+    return _diff_trees(
+        _collect_leaf_counts(left_node),
+        _collect_leaf_counts(right_node),
+        left_label=f"{op_display_name(left)}  ({mode})",
+        right_label=f"{op_display_name(right)}  ({mode})",
+    )
+
+
+def _diff_trees(
+    left_leaves: Counter[str],
+    right_leaves: Counter[str],
+    left_label: str,
+    right_label: str,
+) -> DecompDiff:
+    """Compute diff between two leaf count sets."""
+    all_ops = set(left_leaves) | set(right_leaves)
 
     added: Counter[str] = Counter()
     removed: Counter[str] = Counter()
     changed: list[tuple[str, int, int]] = []
 
     for name in sorted(all_ops):
-        fc = full_leaves.get(name, 0)
-        cc = compile_leaves.get(name, 0)
-        if fc == 0 and cc > 0:
-            added[name] = cc
-        elif fc > 0 and cc == 0:
-            removed[name] = fc
-        elif fc != cc:
-            changed.append((name, fc, cc))
+        lc = left_leaves.get(name, 0)
+        rc = right_leaves.get(name, 0)
+        if lc == 0 and rc > 0:
+            added[name] = rc
+        elif lc > 0 and rc == 0:
+            removed[name] = lc
+        elif lc != rc:
+            changed.append((name, lc, rc))
 
     return DecompDiff(
-        op=op_display_name(op),
-        left_mode="full",
-        right_mode="compile",
-        left_leaves=full_leaves,
-        right_leaves=compile_leaves,
+        left_label=left_label,
+        right_label=right_label,
+        left_leaves=left_leaves,
+        right_leaves=right_leaves,
         added=added,
         removed=removed,
         changed=changed,

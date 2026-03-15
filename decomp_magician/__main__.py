@@ -10,7 +10,7 @@ from collections import Counter
 from dataclasses import dataclass
 from typing import NamedTuple
 
-from decomp_magician.diff import compute_diff
+from decomp_magician.diff import compute_diff, compute_diff_ops
 from decomp_magician.dispatch import (
     DispatchInfo,
     format_dispatch_detail,
@@ -366,8 +366,11 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument(
         "--diff",
-        action="store_true",
-        help="Show what changes between full and compile decomposition",
+        nargs="?",
+        const=True,
+        default=False,
+        metavar="OP2",
+        help="Compare decompositions: bare=full vs compile, with OP2=compare two ops",
     )
     parser.add_argument(
         "--model",
@@ -437,13 +440,13 @@ def main(argv: list[str] | None = None) -> int:
     # --json combines with --leaves, --reverse, --target-opset, --diff but not --mermaid/--dot
     mode_flags = sum([
         args.mermaid, args.dot, args.leaves, args.reverse,
-        bool(args.target_opset), args.diff,
+        bool(args.target_opset), bool(args.diff),
     ])
     if mode_flags > 1:
         conflicting = [f for f, v in [
             ("--mermaid", args.mermaid), ("--dot", args.dot),
             ("--leaves", args.leaves), ("--reverse", args.reverse),
-            ("--target-opset", bool(args.target_opset)), ("--diff", args.diff),
+            ("--target-opset", bool(args.target_opset)), ("--diff", bool(args.diff)),
         ] if v]
         print(f"Conflicting flags: {', '.join(conflicting)} (pick one)", file=sys.stderr)
         return 1
@@ -625,6 +628,13 @@ def _run_stats(args) -> int:
                 for name, depth in data.deepest
             ],
         }
+        if args.target_opset:
+            from decomp_magician.opset import is_core_aten
+            covered = [n for n in data.leaf_ops if is_core_aten(n)]
+            non_covered = [n for n in data.leaf_ops if not is_core_aten(n)]
+            json_data["opset"] = args.target_opset
+            json_data["leaf_ops_in_opset"] = len(covered)
+            json_data["leaf_ops_not_in_opset"] = sorted(non_covered)
         print(json.dumps(json_data, indent=2))
         return 0
 
@@ -661,6 +671,35 @@ def _run_stats(args) -> int:
     lines.append(_c(_BOLD, "Deepest decomposition chains") + ":")
     for name, depth in data.deepest:
         lines.append(f"  {name:<50}  depth {depth}")
+
+    # Opset coverage analysis
+    if args.target_opset:
+        from decomp_magician.opset import is_core_aten
+        covered_leaf_ops = [name for name in data.leaf_ops if is_core_aten(name)]
+        non_covered_leaf_ops = [name for name in data.leaf_ops if not is_core_aten(name)]
+        total_unique = len(data.leaf_ops)
+        covered_unique = len(covered_leaf_ops)
+        pct = covered_unique / total_unique * 100 if total_unique else 0
+
+        lines.append("")
+        lines.append(
+            _c(_BOLD, f"Leaf op coverage") +
+            f"  (target: {args.target_opset})"
+        )
+        lines.append(
+            f"  {_c(_GREEN, str(covered_unique))}/{total_unique} unique leaf ops are in "
+            f"{args.target_opset} ({pct:.0f}%)"
+        )
+        if non_covered_leaf_ops:
+            lines.append("")
+            lines.append(
+                _c(_BOLD, "Leaf ops NOT in " + args.target_opset) + ":"
+            )
+            nc_width = max(len(n) for n in non_covered_leaf_ops)
+            for name in sorted(non_covered_leaf_ops):
+                count = data.leaf_ops[name]
+                padded = name.ljust(nc_width)
+                lines.append(f"  {_c(_RED, padded)}  appears in {count} decompositions")
 
     print("\n".join(lines))
     return 0
@@ -720,19 +759,37 @@ def _run_opset(op, args) -> int:
 
 
 def _run_diff(op, args) -> int:
-    """Show diff between full and compile decomposition."""
-    diff = compute_diff(op, depth=args.depth)
+    """Show diff between decompositions.
+
+    Two modes:
+      --diff           → compare full vs compile for the same op
+      --diff <op2>     → compare this op vs op2 (same mode)
+    """
+    if args.diff is True:
+        # No second op: compare full vs compile
+        diff = compute_diff(op, depth=args.depth)
+    else:
+        # Second op provided: compare two ops
+        result2 = resolve_op(args.diff)
+        if isinstance(result2, list):
+            if len(result2) == 0:
+                print(f"No ops found matching '{args.diff}'", file=sys.stderr)
+                return 1
+            print(f"Ambiguous op name '{args.diff}'. Candidates:", file=sys.stderr)
+            for c in sorted(result2):
+                print(f"  {c}", file=sys.stderr)
+            return 1
+        diff = compute_diff_ops(op, result2, depth=args.depth, compile=args.compile)
 
     if args.json:
         json_data = {
-            "op": diff.op,
-            "left_mode": diff.left_mode,
-            "right_mode": diff.right_mode,
+            "left": diff.left_label,
+            "right": diff.right_label,
             "added": [{"op": n, "count": c} for n, c in diff.added.most_common()],
             "removed": [{"op": n, "count": c} for n, c in diff.removed.most_common()],
             "changed": [
-                {"op": n, "full_count": fc, "compile_count": cc}
-                for n, fc, cc in diff.changed
+                {"op": n, "left_count": lc, "right_count": rc}
+                for n, lc, rc in diff.changed
             ],
         }
         print(json.dumps(json_data, indent=2))
@@ -740,34 +797,38 @@ def _run_diff(op, args) -> int:
 
     has_changes = diff.added or diff.removed or diff.changed
 
+    left_short = diff.left_label.split("  ")[0]
+    right_short = diff.right_label.split("  ")[0]
+
     lines = [
-        _c(_BOLD, diff.op) + f"  {diff.left_mode} vs {diff.right_mode} decomposition",
+        _c(_BOLD, diff.left_label) + "  vs  " + _c(_BOLD, diff.right_label),
     ]
 
     if not has_changes:
         lines.append("")
-        lines.append(_c(_DIM, "No differences — both modes produce the same leaf frontier."))
+        lines.append(_c(_DIM, "No differences — both produce the same leaf frontier."))
         print("\n".join(lines))
         return 0
 
     if diff.removed:
         lines.append("")
-        lines.append(_c(_BOLD, "Removed") + f"  (in {diff.left_mode} but not {diff.right_mode}):")
+        lines.append(_c(_BOLD, "Removed") + f"  (in {left_short} only):")
         for name, count in diff.removed.most_common():
             lines.append(f"  {_c(_RED, '-')} {name}  x{count}")
 
     if diff.added:
         lines.append("")
-        lines.append(_c(_BOLD, "Added") + f"  (in {diff.right_mode} but not {diff.left_mode}):")
+        lines.append(_c(_BOLD, "Added") + f"  (in {right_short} only):")
         for name, count in diff.added.most_common():
             lines.append(f"  {_c(_GREEN, '+')} {name}  x{count}")
 
     if diff.changed:
         lines.append("")
         lines.append(_c(_BOLD, "Changed counts") + ":")
-        for name, fc, cc in diff.changed:
-            direction = _c(_GREEN, "+" + str(cc - fc)) if cc > fc else _c(_RED, str(cc - fc))
-            lines.append(f"  {_c(_YELLOW, '~')} {name}  x{fc} -> x{cc}  ({direction})")
+        for name, lc, rc in diff.changed:
+            delta = rc - lc
+            direction = _c(_GREEN, f"+{delta}") if delta > 0 else _c(_RED, str(delta))
+            lines.append(f"  {_c(_YELLOW, '~')} {name}  x{lc} -> x{rc}  ({direction})")
 
     print("\n".join(lines))
     return 0
