@@ -219,6 +219,23 @@ class TestModelFlag:
         out = capsys.readouterr().out
         assert "[decomposable]" in out or "[leaf]" in out
 
+    def test_model_dtensor_text(self, tiny_model_path, capsys):
+        """--model --dtensor should show per-op DTensor coverage and verdict."""
+        assert main(["--model", tiny_model_path, "--dtensor", "--no-color"]) == 0
+        out = capsys.readouterr().out
+        assert "dtensor:" in out
+        assert "all ops covered" in out
+
+    def test_model_dtensor_json(self, tiny_model_path, capsys):
+        """--model --dtensor --json should include dtensor fields."""
+        assert main(["--model", tiny_model_path, "--dtensor", "--json"]) == 0
+        data = json.loads(capsys.readouterr().out)
+        assert "dtensor_covered" in data
+        assert data["dtensor_covered"] is True
+        assert data["dtensor_missing_ops"] == []
+        for op in data["ops"]:
+            assert "dtensor_strategy" in op
+
 
 class TestFormatTree:
     def test_leaf_format(self):

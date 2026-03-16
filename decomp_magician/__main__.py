@@ -649,7 +649,7 @@ def _run_stats(args) -> int:
     """Run bulk statistics across all decomposable ops."""
     print("Scanning all decomposable ops...", file=sys.stderr)
 
-    data = compute_stats(compile=args.compile)
+    data = compute_stats(compile=args.compile, dtensor=args.dtensor)
 
     if args.json:
         json_data = {
@@ -676,6 +676,19 @@ def _run_stats(args) -> int:
             json_data["opset"] = args.target_opset
             json_data["leaf_ops_in_opset"] = len(covered)
             json_data["leaf_ops_not_in_opset"] = sorted(non_covered)
+        if data.dtensor:
+            dt = data.dtensor
+            json_data["dtensor"] = {
+                "registered": dt.registered,
+                "decomp_fallback": dt.decomp_fallback,
+                "missing": dt.missing,
+                "fully_covered": dt.fully_covered,
+                "has_gaps": dt.has_gaps,
+                "top_uncovered": [
+                    {"op": name, "appearances": count}
+                    for name, count in dt.top_uncovered
+                ],
+            }
         print(json.dumps(json_data, indent=2))
         return 0
 
@@ -741,6 +754,33 @@ def _run_stats(args) -> int:
                 count = data.leaf_ops[name]
                 padded = name.ljust(nc_width)
                 lines.append(f"  {_c(_RED, padded)}  appears in {count} decompositions")
+
+    # DTensor coverage section
+    if data.dtensor:
+        dt = data.dtensor
+        total_classified = dt.registered + dt.decomp_fallback + dt.missing
+        reg_pct = dt.registered / total_classified * 100 if total_classified else 0
+
+        lines.append("")
+        lines.append(_c(_BOLD, "DTensor coverage") + ":")
+        lines.append(f"  Registered strategy:   {_c(_GREEN, str(dt.registered))} ({reg_pct:.0f}%)")
+        lines.append(f"  Decomp fallback:       {dt.decomp_fallback}")
+        lines.append(f"  No strategy:           {_c(_RED, str(dt.missing))}")
+        lines.append("")
+
+        traceable_with_children = dt.fully_covered + dt.has_gaps
+        if traceable_with_children > 0:
+            cov_pct = dt.fully_covered / traceable_with_children * 100
+            lines.append(f"  Fully covered trees:   {_c(_GREEN, str(dt.fully_covered))}/{traceable_with_children} ({cov_pct:.0f}%)")
+            lines.append(f"  Trees with gaps:       {_c(_RED, str(dt.has_gaps))}")
+
+        if dt.top_uncovered:
+            lines.append("")
+            lines.append(_c(_BOLD, "Top uncovered leaf ops") + "  (most common gaps across all trees):")
+            uc_width = max(len(name) for name, _ in dt.top_uncovered)
+            for name, count in dt.top_uncovered:
+                bar = "█" * min(count // 2, 40)
+                lines.append(f"  {_c(_RED, name):<{uc_width + 10}}  {count:>4}  {_c(_DIM, bar)}")
 
     print("\n".join(lines))
     return 0
@@ -962,19 +1002,36 @@ def _run_model(args) -> int:
         print("No ATen ops found in the model graph.", file=sys.stderr)
         return 1
 
+    # Classify DTensor coverage if requested
+    dtensor_info: dict[str, str] = {}
+    if args.dtensor:
+        from decomp_magician.classify import classify as classify_op
+        for name, op_obj in op_objects.items():
+            try:
+                cls = classify_op(op_obj, dtensor=True)
+                dtensor_info[name] = cls.dtensor_strategy or "missing"
+            except Exception:
+                dtensor_info[name] = "missing"
+
     if args.json:
         json_data: dict = {
             "model": path,
             "total_ops": sum(op_counts.values()),
             "unique_ops": len(op_counts),
-            "ops": [
-                {"op": name, "count": count}
-                for name, count in op_counts.most_common()
-            ],
+            "ops": [],
         }
+        for name, count in op_counts.most_common():
+            entry: dict = {"op": name, "count": count}
+            if name in dtensor_info:
+                entry["dtensor_strategy"] = dtensor_info[name]
+            json_data["ops"].append(entry)
         if args.target_opset:
             json_data["opset"] = args.target_opset
             json_data["decomposed"] = True
+        if dtensor_info:
+            missing = [n for n, s in dtensor_info.items() if s == "missing"]
+            json_data["dtensor_covered"] = len(missing) == 0
+            json_data["dtensor_missing_ops"] = sorted(missing)
         print(json.dumps(json_data, indent=2))
         return 0
 
@@ -985,15 +1042,25 @@ def _run_model(args) -> int:
         "",
         f"  Total op instances:  {total}",
         f"  Unique ops:          {len(op_counts)}",
-        "",
-        _c(_BOLD, "Ops in graph") + ":",
     ]
+
+    # DTensor summary at top if requested
+    if dtensor_info:
+        missing = [n for n, s in dtensor_info.items() if s == "missing"]
+        if missing:
+            lines.append(f"  DTensor:             {_c(_RED, f'{len(missing)} ops missing strategies')}")
+        else:
+            lines.append(f"  DTensor:             {_c(_GREEN, 'all ops covered')}")
+
+    lines.append("")
+    lines.append(_c(_BOLD, "Ops in graph") + ":")
 
     name_width = max(len(n) for n in op_counts)
 
     if args.target_opset:
         for name, count in op_counts.most_common():
-            lines.append(f"  {name:<{name_width}}  x{count}")
+            dt_tag = _format_model_dtensor_tag(dtensor_info, name)
+            lines.append(f"  {name:<{name_width}}  x{count}{dt_tag}")
         lines.append("")
         lines.append(
             _c(_DIM, f"These are the ops a {args.target_opset} backend must implement for this model.")
@@ -1006,7 +1073,8 @@ def _run_model(args) -> int:
             op_obj = op_objects.get(name)
             has_decomp = op_obj is not None and op_obj in decomposition_table
             tag = _c(_YELLOW, "[decomposable]") if has_decomp else _c(_DIM, "[leaf]")
-            lines.append(f"  {name:<{name_width}}  x{count}  {tag}")
+            dt_tag = _format_model_dtensor_tag(dtensor_info, name)
+            lines.append(f"  {name:<{name_width}}  x{count}  {tag}{dt_tag}")
             if has_decomp:
                 decomposable += 1
         lines.append("")
@@ -1017,6 +1085,18 @@ def _run_model(args) -> int:
 
     print("\n".join(lines))
     return 0
+
+
+def _format_model_dtensor_tag(dtensor_info: dict[str, str], name: str) -> str:
+    """Format a DTensor tag for model analysis output."""
+    strategy = dtensor_info.get(name)
+    if strategy is None:
+        return ""
+    if strategy == "registered":
+        return "  " + _c(_GREEN, "dtensor: ok")
+    if strategy == "decomp-fallback":
+        return "  " + _c(_GREEN, "dtensor: ok (via decomp)")
+    return "  " + _c(_RED, "dtensor: MISSING")
 
 
 class LeafFrontier(NamedTuple):

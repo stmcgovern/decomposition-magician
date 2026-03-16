@@ -3,7 +3,7 @@
 import json
 from collections import Counter
 
-from decomp_magician.stats import StatsResult, compute_stats
+from decomp_magician.stats import DtensorStats, StatsResult, compute_stats
 from decomp_magician.__main__ import main
 
 
@@ -86,3 +86,51 @@ class TestStatsCli:
     def test_stats_no_op_required(self, capsys):
         """--stats should work without an op argument."""
         assert main(["--stats"]) == 0
+
+    def test_stats_dtensor_text(self, capsys):
+        """--stats --dtensor should show DTensor coverage section."""
+        assert main(["--stats", "--dtensor"]) == 0
+        out = capsys.readouterr().out
+        assert "DTensor coverage" in out
+        assert "Registered strategy" in out
+        assert "Fully covered trees" in out
+
+    def test_stats_dtensor_json(self, capsys):
+        """--stats --dtensor --json should include dtensor field."""
+        assert main(["--stats", "--dtensor", "--json"]) == 0
+        data = json.loads(capsys.readouterr().out)
+        assert "dtensor" in data
+        dt = data["dtensor"]
+        assert "registered" in dt
+        assert "decomp_fallback" in dt
+        assert "fully_covered" in dt
+        assert "top_uncovered" in dt
+
+    def test_stats_without_dtensor_no_dtensor_field(self, capsys):
+        """--stats without --dtensor should not include dtensor data."""
+        assert main(["--stats", "--json"]) == 0
+        data = json.loads(capsys.readouterr().out)
+        assert "dtensor" not in data
+
+
+class TestDtensorStats:
+    def test_dtensor_stats_populated(self):
+        data = compute_stats(dtensor=True)
+        assert data.dtensor is not None
+        assert isinstance(data.dtensor, DtensorStats)
+
+    def test_dtensor_stats_nonzero(self):
+        data = compute_stats(dtensor=True)
+        dt = data.dtensor
+        assert dt.registered > 0
+        assert dt.registered + dt.decomp_fallback + dt.missing > 0
+
+    def test_dtensor_coverage_accounting(self):
+        """fully_covered + has_gaps should not exceed traceable ops with children."""
+        data = compute_stats(dtensor=True)
+        dt = data.dtensor
+        assert dt.fully_covered + dt.has_gaps <= data.traceable
+
+    def test_no_dtensor_when_not_requested(self):
+        data = compute_stats(dtensor=False)
+        assert data.dtensor is None
