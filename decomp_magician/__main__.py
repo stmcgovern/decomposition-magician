@@ -56,12 +56,12 @@ def _c(code: str, text: str) -> str:
     return text
 
 
-def format_tree(node: DecompNode, prefix: str = "", is_last: bool = True, is_root: bool = True) -> str:
+def format_tree(node: DecompNode, prefix: str = "", is_last: bool = True, is_root: bool = True, ancestor_has_dtensor: bool = False) -> str:
     """Format a DecompNode tree as a string with box-drawing characters."""
     lines = []
 
     # Build the annotation
-    annotation = _format_annotation(node)
+    annotation = _format_annotation(node, ancestor_has_dtensor)
 
     # Build the line
     op_name = op_display_name(node.op)
@@ -79,17 +79,24 @@ def format_tree(node: DecompNode, prefix: str = "", is_last: bool = True, is_roo
 
     lines.append(line)
 
+    # Track whether this node or any ancestor has a registered dtensor strategy.
+    # "registered" means DTensor intercepts directly — children never reached.
+    # "decomp-fallback" means DTensor runs the decomposition — children ARE reached.
+    this_has_dtensor = ancestor_has_dtensor or (
+        node.classification.dtensor_strategy == "registered"
+    )
+
     # Recurse into children
     child_prefix = prefix + ("    " if is_last else "│   ") if not is_root else ""
     for i, child in enumerate(node.children):
         is_last_child = i == len(node.children) - 1
-        lines.append(format_tree(child, child_prefix, is_last_child, is_root=False))
+        lines.append(format_tree(child, child_prefix, is_last_child, is_root=False, ancestor_has_dtensor=this_has_dtensor))
 
     return "\n".join(lines)
 
 
 
-def _format_annotation(node: DecompNode) -> str:
+def _format_annotation(node: DecompNode, ancestor_has_dtensor: bool = False) -> str:
     """Format the bracket annotation for a node."""
     parts = []
 
@@ -132,12 +139,13 @@ def _format_annotation(node: DecompNode) -> str:
                 annotation += "  " + _c(_GREEN, "mode-invariant")
 
     # DTensor strategy (outside brackets)
+    # A leaf is only a real gap if no ancestor on its path has a strategy.
     if cls.dtensor_strategy is not None:
         if cls.dtensor_strategy == "registered":
             annotation += "  " + _c(_GREEN, "dtensor: ok")
         elif cls.dtensor_strategy == "decomp-fallback":
             annotation += "  " + _c(_GREEN, "dtensor: ok (via decomp)")
-        elif cls.dtensor_strategy == "missing":
+        elif cls.dtensor_strategy == "missing" and not ancestor_has_dtensor:
             annotation += "  " + _c(_RED, "dtensor: MISSING")
 
     return annotation
@@ -1015,6 +1023,7 @@ class LeafFrontier(NamedTuple):
     counts: Counter[str]
     inductor_kept: set[str]
     untraceable: set[str]
+    dtensor_uncovered: set[str]  # leaves with at least one path lacking a registered ancestor
 
 
 def _collect_leaf_frontier(node: DecompNode) -> LeafFrontier:
@@ -1022,8 +1031,12 @@ def _collect_leaf_frontier(node: DecompNode) -> LeafFrontier:
     frontier: Counter[str] = Counter()
     inductor_kept_ops: set[str] = set()
     untraceable_ops: set[str] = set()
+    dtensor_uncovered_ops: set[str] = set()
 
-    def walk(n: DecompNode, multiplier: int = 1) -> None:
+    def walk(n: DecompNode, multiplier: int = 1, ancestor_covered: bool = False) -> None:
+        covered = ancestor_covered or (
+            n.classification.dtensor_strategy == "registered"
+        )
         if len(n.children) == 0:
             name = op_display_name(n.op)
             frontier[name] += multiplier
@@ -1031,12 +1044,14 @@ def _collect_leaf_frontier(node: DecompNode) -> LeafFrontier:
                 inductor_kept_ops.add(name)
             if not n.traceable:
                 untraceable_ops.add(name)
+            if n.classification.dtensor_strategy == "missing" and not covered:
+                dtensor_uncovered_ops.add(name)
             return
         for c in n.children:
-            walk(c, multiplier * c.count)
+            walk(c, multiplier * c.count, covered)
 
     walk(node)
-    return LeafFrontier(frontier, inductor_kept_ops, untraceable_ops)
+    return LeafFrontier(frontier, inductor_kept_ops, untraceable_ops, dtensor_uncovered_ops)
 
 
 def format_leaves(
@@ -1072,6 +1087,8 @@ def format_leaves(
             tags.append(_c(_YELLOW, "inductor-kept"))
         if name in lf.untraceable:
             tags.append(_c(_RED, "untraceable"))
+        if name in lf.dtensor_uncovered:
+            tags.append(_c(_RED, "dtensor: MISSING"))
         # Dispatch info
         dinfo = leaf_dispatch.get(name)
         if dinfo and _show_dispatch:
@@ -1116,6 +1133,8 @@ def _leaves_to_dict(node: DecompNode) -> dict:
             entry["inductor_kept"] = True
         if name in lf.untraceable:
             entry["untraceable"] = True
+        if name in lf.dtensor_uncovered:
+            entry["dtensor_uncovered"] = True
         leaves.append(entry)
 
     return {
@@ -1133,18 +1152,21 @@ def format_summary(node: DecompNode) -> str:
     dtensor_missing = 0
     untraceable = 0
 
-    def walk(n: DecompNode) -> None:
+    def walk(n: DecompNode, ancestor_covered: bool = False) -> None:
         nonlocal inductor_kept, dtensor_missing, untraceable
         dt = n.classification.decomp_type
         counts[dt] = counts.get(dt, 0) + 1
         if n.classification.inductor_kept:
             inductor_kept += 1
-        if n.classification.dtensor_strategy == "missing":
+        if n.classification.dtensor_strategy == "missing" and not ancestor_covered:
             dtensor_missing += 1
         if not n.traceable:
             untraceable += 1
+        covered = ancestor_covered or (
+            n.classification.dtensor_strategy == "registered"
+        )
         for c in n.children:
-            walk(c)
+            walk(c, covered)
 
     walk(node)
     total = sum(counts.values())
@@ -1161,8 +1183,12 @@ def format_summary(node: DecompNode) -> str:
         parts.append(_c(_YELLOW, f"{inductor_kept} inductor-kept"))
     if untraceable > 0:
         parts.append(_c(_RED, f"{untraceable} untraceable"))
-    if dtensor_missing > 0:
-        parts.append(_c(_RED, f"{dtensor_missing} dtensor missing"))
+    has_dtensor = node.classification.dtensor_strategy is not None
+    if has_dtensor:
+        if dtensor_missing > 0:
+            parts.append(_c(_RED, f"dtensor: {dtensor_missing} uncovered"))
+        else:
+            parts.append(_c(_GREEN, "dtensor: covered"))
 
     return " · ".join(parts)
 

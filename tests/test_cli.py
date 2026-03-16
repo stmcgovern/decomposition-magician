@@ -5,8 +5,9 @@ import json
 import pytest
 import torch
 
-from decomp_magician.__main__ import main, format_tree, format_leaves, format_summary, tree_to_dict
-from decomp_magician.tree import build_tree
+from decomp_magician.__main__ import main, format_tree, format_leaves, format_summary, tree_to_dict, _leaves_to_dict
+from decomp_magician.tree import build_tree, DecompNode
+from decomp_magician.classify import OpClass
 
 
 class TestMain:
@@ -384,3 +385,105 @@ class TestJson:
         d = tree_to_dict(node)
         mul_children = [c for c in d["children"] if "mul" in c["op"]]
         assert mul_children[0]["count"] == 2
+
+
+class TestDtensorAncestorCoverage:
+    """DTensor MISSING should only appear when no ancestor has a registered strategy."""
+
+    def _make_node(self, strategy, children=()):
+        """Build a synthetic DecompNode with a given dtensor_strategy."""
+        op = torch.ops.aten.mul.Tensor  # placeholder op
+        cls = OpClass(
+            decomp_type="leaf" if not children else "table",
+            dtensor_strategy=strategy,
+        )
+        return DecompNode(
+            op=op, children=tuple(children), count=1,
+            classification=cls, traceable=True, error=None,
+        )
+
+    def test_missing_suppressed_when_ancestor_registered(self):
+        """A 'missing' leaf below a 'registered' parent should NOT show MISSING."""
+        leaf = self._make_node("missing")
+        parent = self._make_node("registered", children=[leaf])
+        output = format_tree(parent)
+        assert "MISSING" not in output
+
+    def test_missing_shown_when_no_ancestor_registered(self):
+        """A 'missing' leaf with no registered ancestor SHOULD show MISSING."""
+        leaf = self._make_node("missing")
+        parent = self._make_node("decomp-fallback", children=[leaf])
+        output = format_tree(parent)
+        assert "MISSING" in output
+
+    def test_decomp_fallback_does_not_cover(self):
+        """decomp-fallback runs the decomposition — children are still reached."""
+        leaf = self._make_node("missing")
+        mid = self._make_node("decomp-fallback", children=[leaf])
+        root = self._make_node("decomp-fallback", children=[mid])
+        output = format_tree(root)
+        assert "MISSING" in output
+
+    def test_registered_covers_deep_descendants(self):
+        """A registered ancestor covers all descendants, not just direct children."""
+        deep_leaf = self._make_node("missing")
+        mid = self._make_node("missing", children=[deep_leaf])
+        root = self._make_node("registered", children=[mid])
+        output = format_tree(root)
+        assert "MISSING" not in output
+
+    def test_summary_covered_verdict(self):
+        """Fully covered tree should show 'dtensor: covered' in summary."""
+        leaf = self._make_node("missing")
+        parent = self._make_node("registered", children=[leaf])
+        summary = format_summary(parent)
+        assert "dtensor: covered" in summary
+
+    def test_summary_uncovered_verdict(self):
+        """Uncovered tree should show 'dtensor: N uncovered' in summary."""
+        leaf = self._make_node("missing")
+        parent = self._make_node("decomp-fallback", children=[leaf])
+        summary = format_summary(parent)
+        assert "1 uncovered" in summary
+
+    def test_summary_no_verdict_without_dtensor(self):
+        """When dtensor_strategy is None, summary should not mention dtensor."""
+        leaf = self._make_node(None)
+        parent = self._make_node(None, children=[leaf])
+        summary = format_summary(parent)
+        assert "dtensor" not in summary
+
+    def test_leaves_shows_uncovered(self):
+        """format_leaves should tag uncovered leaves with dtensor: MISSING."""
+        leaf = self._make_node("missing")
+        parent = self._make_node("decomp-fallback", children=[leaf])
+        output = format_leaves(parent)
+        assert "MISSING" in output
+
+    def test_leaves_hides_covered(self):
+        """format_leaves should not tag covered leaves."""
+        leaf = self._make_node("missing")
+        parent = self._make_node("registered", children=[leaf])
+        output = format_leaves(parent)
+        assert "MISSING" not in output
+
+    def test_json_leaves_uncovered_flag(self):
+        """JSON leaves output should include dtensor_uncovered for gap ops."""
+        leaf = self._make_node("missing")
+        parent = self._make_node("decomp-fallback", children=[leaf])
+        d = _leaves_to_dict(parent)
+        assert any(l.get("dtensor_uncovered") for l in d["leaves"])
+
+    def test_json_leaves_no_flag_when_covered(self):
+        """JSON leaves output should not include dtensor_uncovered when covered."""
+        leaf = self._make_node("missing")
+        parent = self._make_node("registered", children=[leaf])
+        d = _leaves_to_dict(parent)
+        assert not any(l.get("dtensor_uncovered") for l in d["leaves"])
+
+    def test_cli_dtensor_softmax_no_missing(self, capsys):
+        """softmax --dtensor should show no MISSING (all paths covered)."""
+        assert main(["softmax", "--dtensor", "--no-color"]) == 0
+        out = capsys.readouterr().out
+        assert "MISSING" not in out
+        assert "dtensor: covered" in out
