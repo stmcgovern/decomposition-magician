@@ -420,11 +420,12 @@ class TestDtensorAncestorCoverage:
         )
 
     def test_missing_suppressed_when_ancestor_registered(self):
-        """A 'missing' leaf below a 'registered' parent should NOT show MISSING."""
+        """A 'missing' leaf below a 'registered' parent should show 'via ancestor', not MISSING."""
         leaf = self._make_node("missing")
         parent = self._make_node("registered", children=[leaf])
         output = format_tree(parent)
         assert "MISSING" not in output
+        assert "via ancestor" in output
 
     def test_missing_shown_when_no_ancestor_registered(self):
         """A 'missing' leaf with no registered ancestor SHOULD show MISSING."""

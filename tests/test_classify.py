@@ -1,8 +1,9 @@
 """Tests for op classification."""
 
+import pytest
 import torch
 
-from decomp_magician.classify import classify
+from decomp_magician.classify import OpClass, classify
 
 
 class TestDecompType:
@@ -130,3 +131,23 @@ class TestTags:
         cls = classify(op)
         assert isinstance(cls.tags, tuple)
         assert all(isinstance(t, str) for t in cls.tags)
+
+
+class TestOpClassValidation:
+    def test_invalid_decomp_type_raises(self):
+        with pytest.raises(ValueError, match="Invalid decomp_type"):
+            OpClass(decomp_type="Table")
+
+    def test_invalid_dtensor_strategy_raises(self):
+        with pytest.raises(ValueError, match="Invalid dtensor_strategy"):
+            OpClass(decomp_type="leaf", dtensor_strategy="registred")
+
+    def test_valid_decomp_types(self):
+        for dt in ("CIA", "table", "both", "leaf"):
+            cls = OpClass(decomp_type=dt)
+            assert cls.decomp_type == dt
+
+    def test_valid_dtensor_strategies(self):
+        for ds in ("registered", "decomp-fallback", "missing", None):
+            cls = OpClass(decomp_type="leaf", dtensor_strategy=ds)
+            assert cls.dtensor_strategy == ds

@@ -8,6 +8,10 @@ import torch
 from torch._ops import OpOverload
 
 
+DECOMP_TYPES = frozenset({"CIA", "table", "both", "leaf"})
+DTENSOR_STRATEGIES = frozenset({"registered", "decomp-fallback", "missing"})
+
+
 @dataclass(frozen=True)
 class OpClass:
     decomp_type: str  # "CIA", "table", "both", "leaf"
@@ -19,6 +23,18 @@ class OpClass:
     dtensor_strategy: str | None = None  # "registered", "decomp-fallback", "missing"
     autograd_type: str | None = None  # "autograd_kernel", "math_kernel", etc.
     has_adiov: bool | None = None  # non-fallthrough ADInplaceOrView kernel
+
+    def __post_init__(self):
+        if self.decomp_type not in DECOMP_TYPES:
+            raise ValueError(
+                f"Invalid decomp_type {self.decomp_type!r}, "
+                f"expected one of {sorted(DECOMP_TYPES)}"
+            )
+        if self.dtensor_strategy is not None and self.dtensor_strategy not in DTENSOR_STRATEGIES:
+            raise ValueError(
+                f"Invalid dtensor_strategy {self.dtensor_strategy!r}, "
+                f"expected one of {sorted(DTENSOR_STRATEGIES)} or None"
+            )
 
 
 def is_dtensor_intercept(strategy: str | None) -> bool:

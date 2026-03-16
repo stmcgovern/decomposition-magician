@@ -6,6 +6,7 @@ Answer questions about PyTorch operator decompositions from the command line.
 - *Which primitive ops does my backend need to implement?*
 - *Does this op decompose fully to core ATen?*
 - *Which ops produce `squeeze.dims` as a child?*
+- *Does my op have full DTensor sharding coverage?*
 
 PyTorch's operator decompositions are recursive and the metadata is scattered across multiple subsystems. This tool makes that implicit structure observable — it traces decompositions automatically, classifies every op, and shows the result.
 
@@ -162,6 +163,48 @@ Top leaf ops  (most common across all decompositions):
 $ decomp-magician --model model.pt2 --target-opset core_aten
 ```
 
+**DTensor coverage** — does this op have full sharding strategy coverage?
+```
+$ decomp-magician softmax --dtensor
+
+aten.softmax.int  [CIA]  dtensor: ok (via decomp)
+└── aten._softmax.default  [table]  dtensor: ok
+    ├── aten.amax.default  [table]  dtensor: ok
+    │   └── prims.amax.default  [leaf]  dtensor: ok (via ancestor)
+    ├── aten.sub.Tensor  [table, inductor-kept]  dtensor: ok
+    │   └── ...
+    ├── aten.exp.default  [table, inductor-kept]  dtensor: ok
+    │   └── ...
+    ├── aten.sum.dim_IntList  [table, inductor-kept]  dtensor: ok
+    │   └── ...
+    └── aten.div.Tensor  [table, inductor-kept]  dtensor: ok
+        └── ...
+
+14 ops (8 table, 5 leaf, 1 CIA) · 6 inductor-kept · 2 untraceable · dtensor: covered
+```
+
+Each node shows its DTensor status: `ok` (direct registered strategy), `ok (via decomp)` (strategy traces through the decomposition), `ok (via ancestor)` (a parent intercepts before DTensor reaches this op), or `MISSING` (no coverage on any path). The summary gives an overall verdict.
+
+**DTensor bulk coverage** — how much of the decomposition table is covered?
+```
+$ decomp-magician --stats --dtensor
+
+...
+DTensor coverage:
+  Registered strategy:   346 (47%)
+  Decomp fallback:       387
+  No strategy:           0
+
+  Fully covered trees:   489/560 (87%)
+  Trees with gaps:       71
+
+Top uncovered leaf ops  (most common gaps across all trees):
+  aten.scalar_tensor.default    29
+  prims.fft_r2c.default          6
+  prims.normal.default           5
+  ...
+```
+
 **Graph export** — Mermaid or Graphviz diagrams:
 ```
 $ decomp-magician softmax --mermaid    # paste into GitHub markdown
@@ -207,7 +250,7 @@ Start with `decomp-magician <op>`. Add `--compile` for torch.compile behavior, `
 
 | Flag | Description |
 |------|-------------|
-| `--dtensor` | Show DTensor sharding strategy coverage |
+| `--dtensor` | Show DTensor sharding strategy coverage (per-op and ancestor-aware) |
 | `--dispatch-table` | Show dispatch table entries per op |
 | `--mode-sensitivity` | Show ops that differ under `inference_mode` vs `no_grad` |
 | `--adiov` | Filter to paths reaching ADInplaceOrView ops |

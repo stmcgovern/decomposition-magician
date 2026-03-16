@@ -11,7 +11,7 @@ def _node_id(index: int) -> str:
 
 def _is_terminal(n: DecompNode) -> bool:
     """A node is terminal if it has no children."""
-    return len(n.children) == 0
+    return not n.children
 
 
 def _node_tags(n: DecompNode) -> list[str]:

@@ -29,6 +29,12 @@ class TestDecompNodeInvariants:
         assert node.error == "test error"
         assert node.children == ()
 
+    def test_count_zero_raises(self):
+        """count must be >= 1."""
+        op = torch.ops.aten.mul.Tensor
+        with pytest.raises(ValueError, match="count must be >= 1"):
+            DecompNode(op=op, count=0)
+
     def test_valid_traceable_with_children(self):
         """Traceable node with children is valid."""
         op = torch.ops.aten.mul.Tensor

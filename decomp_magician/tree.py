@@ -31,6 +31,8 @@ class DecompNode:
     error: str | None = None
 
     def __post_init__(self):
+        if self.count < 1:
+            raise ValueError(f"count must be >= 1, got {self.count}")
         if not self.traceable and self.children:
             raise ValueError("Untraceable node cannot have children")
         if self.error is not None and self.traceable:

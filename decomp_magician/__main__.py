@@ -7,7 +7,7 @@ import json
 import os
 import sys
 from collections import Counter
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Callable, NamedTuple
 
 from decomp_magician.diff import compute_diff, compute_diff_ops
@@ -23,7 +23,7 @@ from decomp_magician.opset import OPSETS, check_opset_coverage
 from decomp_magician.resolve import resolve_op
 from decomp_magician.reverse import reverse_lookup
 from decomp_magician.stats import compute_stats
-from decomp_magician.classify import is_dtensor_intercept
+from decomp_magician.classify import DECOMP_TYPES, is_dtensor_intercept
 from decomp_magician.tree import DecompNode, build_tree, op_display_name, trace_backward
 
 
@@ -137,13 +137,15 @@ def _format_annotation(node: DecompNode, ancestor_has_dtensor: bool = False) -> 
                 annotation += "  " + _c(_GREEN, "mode-invariant")
 
     # DTensor strategy (outside brackets)
-    # A leaf is only a real gap if no ancestor on its path has a strategy.
+    # A leaf is only a real gap if no ancestor on its path has a registered strategy.
     if cls.dtensor_strategy is not None:
         if cls.dtensor_strategy == "registered":
             annotation += "  " + _c(_GREEN, "dtensor: ok")
         elif cls.dtensor_strategy == "decomp-fallback":
             annotation += "  " + _c(_GREEN, "dtensor: ok (via decomp)")
-        elif cls.dtensor_strategy == "missing" and not ancestor_has_dtensor:
+        elif cls.dtensor_strategy == "missing" and ancestor_has_dtensor:
+            annotation += "  " + _c(_DIM, "dtensor: ok (via ancestor)")
+        elif cls.dtensor_strategy == "missing":
             annotation += "  " + _c(_RED, "dtensor: MISSING")
 
     return annotation
@@ -172,7 +174,7 @@ def _analyze_purity(node: DecompNode) -> PurityResult:
     mode_sensitive_names: set[str] = set()
 
     def walk(n: DecompNode, multiplier: int = 1) -> None:
-        if len(n.children) == 0:
+        if not n.children:
             name = op_display_name(n.op)
             counts[name] += multiplier
             if name not in mutable_names and name not in adiov_names:
@@ -208,10 +210,8 @@ def _filter_adiov_paths(node: DecompNode) -> DecompNode | None:
 
     Returns None if no path reaches an ADIOV op.
     """
-    from dataclasses import replace as dc_replace
-
     # Leaf node: keep only if it has ADIOV
-    if len(node.children) == 0:
+    if not node.children:
         dinfo = get_dispatch_info_cached(node.op)
         return node if dinfo.has_adiov else None
 
@@ -225,7 +225,7 @@ def _filter_adiov_paths(node: DecompNode) -> DecompNode | None:
     if not kept_children:
         return None
 
-    return dc_replace(node, children=tuple(kept_children))
+    return replace(node, children=tuple(kept_children))
 
 
 def format_purity(result: PurityResult) -> str:
@@ -272,7 +272,7 @@ def _enrich_leaves_with_dispatch(d: dict, node: DecompNode) -> dict:
     leaf_dispatch: dict[str, DispatchInfo] = {}
 
     def walk(n: DecompNode):
-        if len(n.children) == 0:
+        if not n.children:
             name = op_display_name(n.op)
             if name not in leaf_dispatch:
                 leaf_dispatch[name] = get_dispatch_info_cached(n.op)
@@ -1107,7 +1107,7 @@ def _collect_leaf_frontier(node: DecompNode) -> LeafFrontier:
         covered = ancestor_covered or is_dtensor_intercept(
             n.classification.dtensor_strategy
         )
-        if len(n.children) == 0:
+        if not n.children:
             name = op_display_name(n.op)
             frontier[name] += multiplier
             if n.classification.inductor_kept:
@@ -1131,7 +1131,7 @@ def format_leaves(
     """Format the leaf frontier with propagated counts."""
     root_name = op_display_name(node.op)
 
-    if len(node.children) == 0:
+    if not node.children:
         return f"{_c(_DIM, root_name)}  [leaf, no decomposition]"
 
     lf = _collect_leaf_frontier(node)
@@ -1140,7 +1140,7 @@ def format_leaves(
     leaf_dispatch: dict[str, DispatchInfo] = {}
     if _show_dispatch or _show_mode_sensitivity:
         def _walk_for_dispatch(n: DecompNode):
-            if len(n.children) == 0:
+            if not n.children:
                 name = op_display_name(n.op)
                 if name not in leaf_dispatch:
                     leaf_dispatch[name] = get_dispatch_info_cached(n.op)
@@ -1191,7 +1191,7 @@ def _leaves_to_dict(node: DecompNode) -> dict:
     """Convert leaf frontier to a JSON-serializable dict."""
     root_name = op_display_name(node.op)
 
-    if len(node.children) == 0:
+    if not node.children:
         return {"op": root_name, "decomp_type": "leaf", "leaves": []}
 
     lf = _collect_leaf_frontier(node)
@@ -1217,7 +1217,7 @@ def _leaves_to_dict(node: DecompNode) -> dict:
 
 def format_summary(node: DecompNode) -> str:
     """One-line summary of the tree's composition."""
-    counts = {"table": 0, "CIA": 0, "both": 0, "leaf": 0}
+    counts = {dt: 0 for dt in DECOMP_TYPES}
     inductor_kept = 0
     dtensor_missing = 0
     untraceable = 0
@@ -1241,9 +1241,9 @@ def format_summary(node: DecompNode) -> str:
     walk(node)
     total = sum(counts.values())
 
-    # Build type breakdown
+    # Build type breakdown (display order: most interesting first)
     type_parts = []
-    for dt in ("table", "CIA", "both", "leaf"):
+    for dt in sorted(counts, key=lambda t: counts[t], reverse=True):
         if counts[dt] > 0:
             type_parts.append(f"{counts[dt]} {dt}")
     ops_word = "op" if total == 1 else "ops"
