@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import torch
 from torch._ops import OpOverload
@@ -11,7 +11,7 @@ from torch._ops import OpOverload
 @dataclass(frozen=True)
 class OpClass:
     decomp_type: str  # "CIA", "table", "both", "leaf"
-    has_backend: dict[str, bool] = None  # type: ignore[assignment]
+    has_backend: dict[str, bool] = field(default_factory=dict)
     tags: tuple[str, ...] = ()
     is_mutable: bool = False
     has_alias_info: bool = False
@@ -20,9 +20,14 @@ class OpClass:
     autograd_type: str | None = None  # "autograd_kernel", "math_kernel", etc.
     has_adiov: bool | None = None  # non-fallthrough ADInplaceOrView kernel
 
-    def __post_init__(self):
-        if self.has_backend is None:
-            object.__setattr__(self, "has_backend", {})
+
+def is_dtensor_intercept(strategy: str | None) -> bool:
+    """Whether this DTensor strategy intercepts dispatch (children unreachable).
+
+    Only 'registered' strategies intercept — 'decomp-fallback' traces through
+    the decomposition, so children ARE reached and need their own strategies.
+    """
+    return strategy == "registered"
 
 
 # Backend dispatch keys to check

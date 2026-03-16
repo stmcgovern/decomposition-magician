@@ -94,32 +94,8 @@ def _classify_autograd_type(entry: DispatchEntry | None) -> str:
     return "other"
 
 
-def get_dispatch_info(op: OpOverload) -> DispatchInfo:
-    """Get dispatch table analysis for a single op."""
-    name = op.name()
-    entries = _parse_dispatch_table(name)
-
-    ag = entries.get(_AUTOGRAD_KEY)
-    adiov = entries.get(_ADIOV_KEY)
-    dense = entries.get(_DENSE_KEY)
-
-    ag_type = _classify_autograd_type(ag)
-    has_adiov = adiov is not None and not adiov.is_fallthrough
-    mode_sensitive = ag_type not in ("none", "fallthrough")
-
-    return DispatchInfo(
-        op_name=name,
-        autograd_entry=ag,
-        adiov_entry=adiov,
-        dense_entry=dense,
-        autograd_type=ag_type,
-        has_adiov=has_adiov,
-        mode_sensitive=mode_sensitive,
-    )
-
-
-def get_dispatch_info_by_name(op_name: str) -> DispatchInfo:
-    """Get dispatch table analysis from an aten:: op name string."""
+def _build_dispatch_info(op_name: str) -> DispatchInfo:
+    """Build dispatch info from an op name string."""
     entries = _parse_dispatch_table(op_name)
 
     ag = entries.get(_AUTOGRAD_KEY)
@@ -139,6 +115,16 @@ def get_dispatch_info_by_name(op_name: str) -> DispatchInfo:
         has_adiov=has_adiov,
         mode_sensitive=mode_sensitive,
     )
+
+
+def get_dispatch_info(op: OpOverload) -> DispatchInfo:
+    """Get dispatch table analysis for a single op."""
+    return _build_dispatch_info(op.name())
+
+
+def get_dispatch_info_by_name(op_name: str) -> DispatchInfo:
+    """Get dispatch table analysis from an aten:: op name string."""
+    return _build_dispatch_info(op_name)
 
 
 # Cache for bulk lookups (e.g. tree walks)

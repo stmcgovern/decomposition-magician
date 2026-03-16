@@ -6,7 +6,7 @@ import warnings
 from collections import Counter
 from dataclasses import dataclass
 
-from decomp_magician.classify import classify
+from decomp_magician.classify import classify, is_dtensor_intercept
 from decomp_magician.reverse import _is_out_variant
 from decomp_magician.tree import DecompNode, build_tree, op_display_name
 
@@ -171,8 +171,8 @@ def _collect_uncovered_dtensor(node: DecompNode) -> set[str]:
     uncovered: set[str] = set()
 
     def walk(n: DecompNode, ancestor_covered: bool = False) -> None:
-        covered = ancestor_covered or (
-            n.classification.dtensor_strategy == "registered"
+        covered = ancestor_covered or is_dtensor_intercept(
+            n.classification.dtensor_strategy
         )
         if not n.children:
             if n.classification.dtensor_strategy == "missing" and not covered:

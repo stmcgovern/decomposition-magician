@@ -74,16 +74,21 @@ def _get_decomp_fn(op: OpOverload):
     return None
 
 
-def _make_meta_args(op: OpOverload) -> tuple[list, dict] | None:
+def _make_meta_args(
+    op: OpOverload, shape: list[int] | None = None,
+) -> tuple[list, dict] | None:
     """Create meta tensor arguments from the op's schema.
 
     Returns (args, kwargs) or None if creation fails.
+    If shape is provided, tensors use that shape instead of the default.
     """
+    maker = (lambda arg: _make_arg_with_shape(arg, shape)) if shape else _make_arg
+
     args = []
     for arg in op._schema.arguments:
         if arg.kwarg_only:
             break
-        val = _make_arg(arg)
+        val = maker(arg)
         if val is _SENTINEL:
             return None
         args.append(val)
@@ -92,7 +97,7 @@ def _make_meta_args(op: OpOverload) -> tuple[list, dict] | None:
     for arg in op._schema.arguments:
         if not arg.kwarg_only:
             continue
-        val = _make_arg(arg)
+        val = maker(arg)
         if val is _SENTINEL:
             return None
         kwargs[arg.name] = val
@@ -275,7 +280,7 @@ def _trace_decomp_uncached(op: OpOverload) -> tuple[OpOverload, ...] | str:
 
     # Retry with alternative shapes for ops with specific dimensionality needs
     for alt_shape in _ALT_SHAPES:
-        alt_result = _make_meta_args_with_shape(op, alt_shape)
+        alt_result = _make_meta_args(op, shape=alt_shape)
         if alt_result is not None:
             alt_args, alt_kwargs = alt_result
             retry = _try_trace(decomp_fn, alt_args, alt_kwargs)
@@ -294,31 +299,6 @@ _ALT_SHAPES = [
     [1, 3, 8, 8],   # 4D with batch=1, channels=3 (image-like)
     [2, 3, 6, 6],   # 4D divisible by 2 and 3
 ]
-
-
-def _make_meta_args_with_shape(
-    op: OpOverload, shape: list[int]
-) -> tuple[list, dict] | None:
-    """Create meta tensor arguments using a specific default shape."""
-    args = []
-    for arg in op._schema.arguments:
-        if arg.kwarg_only:
-            break
-        val = _make_arg_with_shape(arg, shape)
-        if val is _SENTINEL:
-            return None
-        args.append(val)
-
-    kwargs = {}
-    for arg in op._schema.arguments:
-        if not arg.kwarg_only:
-            continue
-        val = _make_arg_with_shape(arg, shape)
-        if val is _SENTINEL:
-            return None
-        kwargs[arg.name] = val
-
-    return args, kwargs
 
 
 def _make_arg_with_shape(arg, shape: list[int]):

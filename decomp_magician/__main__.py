@@ -23,6 +23,7 @@ from decomp_magician.opset import OPSETS, check_opset_coverage
 from decomp_magician.resolve import resolve_op
 from decomp_magician.reverse import reverse_lookup
 from decomp_magician.stats import compute_stats
+from decomp_magician.classify import is_dtensor_intercept
 from decomp_magician.tree import DecompNode, build_tree, op_display_name, trace_backward
 
 
@@ -79,11 +80,8 @@ def format_tree(node: DecompNode, prefix: str = "", is_last: bool = True, is_roo
 
     lines.append(line)
 
-    # Track whether this node or any ancestor has a registered dtensor strategy.
-    # "registered" means DTensor intercepts directly — children never reached.
-    # "decomp-fallback" means DTensor runs the decomposition — children ARE reached.
-    this_has_dtensor = ancestor_has_dtensor or (
-        node.classification.dtensor_strategy == "registered"
+    this_has_dtensor = ancestor_has_dtensor or is_dtensor_intercept(
+        node.classification.dtensor_strategy
     )
 
     # Recurse into children
@@ -1114,8 +1112,8 @@ def _collect_leaf_frontier(node: DecompNode) -> LeafFrontier:
     dtensor_uncovered_ops: set[str] = set()
 
     def walk(n: DecompNode, multiplier: int = 1, ancestor_covered: bool = False) -> None:
-        covered = ancestor_covered or (
-            n.classification.dtensor_strategy == "registered"
+        covered = ancestor_covered or is_dtensor_intercept(
+            n.classification.dtensor_strategy
         )
         if len(n.children) == 0:
             name = op_display_name(n.op)
@@ -1242,8 +1240,8 @@ def format_summary(node: DecompNode) -> str:
             dtensor_missing += 1
         if not n.traceable:
             untraceable += 1
-        covered = ancestor_covered or (
-            n.classification.dtensor_strategy == "registered"
+        covered = ancestor_covered or is_dtensor_intercept(
+            n.classification.dtensor_strategy
         )
         for c in n.children:
             walk(c, covered)
