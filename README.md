@@ -257,6 +257,7 @@ Start with `decomp-magician <op>`. Add `--compile` for torch.compile behavior, `
 
 ## Limitations
 
-- About 26% of decomposable ops cannot be traced on meta tensors (shape mismatches, data-dependent control flow). These are marked `[untraceable]` and `--leaves` warns when the frontier is incomplete.
+- About 22% of decomposable ops cannot be traced on meta tensors (shape mismatches, data-dependent control flow). These are marked `[untraceable]` and `--leaves` warns when the frontier is incomplete.
+- Some decompositions have **value-dependent control flow** — the ops they produce depend on the runtime values of scalar arguments, not just their types. The tool uses synthetic scalar values chosen to hit general code paths, but may not match a specific use case. For example, `pow(x, p)` decomposes differently for `p=0.5` (→ `sqrt`), `p=2.0` (→ `mul`), and general `p` (→ `prims.pow`).
 - The tool uses the raw `decomposition_table`, not Inductor's internal table. The `--compile` flag correctly identifies terminal ops for Inductor, but the intermediate path may differ for the ~111 ops where Inductor uses custom decompositions.
 - Substring matching only searches the `aten` namespace. Ops in `prims`, `quantized`, etc. require exact names.

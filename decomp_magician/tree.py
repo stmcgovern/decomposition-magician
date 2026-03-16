@@ -179,7 +179,10 @@ def _make_arg(arg):
     if kind == "NumberType":
         if arg.default_value is not None:
             return arg.default_value
-        return 1.0
+        # Avoid special-cased values (0, 0.5, 1.0, 2.0) that trigger
+        # fast paths in decompositions like pow, producing non-representative
+        # traces. 2.5 hits the general code path.
+        return 2.5
 
     if kind == "ListType":
         if arg.default_value is not None:
