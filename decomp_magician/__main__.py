@@ -912,6 +912,9 @@ def _run_model(args) -> int:
     import torch
 
     path = args.model
+    if not os.path.isfile(path):
+        print(f"File not found: {path}", file=sys.stderr)
+        return 1
     try:
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")

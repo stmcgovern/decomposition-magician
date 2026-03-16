@@ -210,7 +210,7 @@ class TestModelFlag:
 
     def test_model_nonexistent_file(self, capsys):
         assert main(["--model", "/nonexistent/path.pt2"]) == 1
-        assert "Failed to load" in capsys.readouterr().err
+        assert "not found" in capsys.readouterr().err.lower()
 
     def test_model_without_opset_shows_decomposable(self, tiny_model_path, capsys):
         """Without --target-opset, model mode should show [decomposable] or [leaf]."""

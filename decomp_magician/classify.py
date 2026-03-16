@@ -56,7 +56,7 @@ def _build_inductor_kept() -> set[str]:
         for op in decomposition_table:
             if op not in inductor_table:
                 result.add(op.name())
-    except ImportError:
+    except Exception:
         pass
     _inductor_kept_cache = result
     return result
@@ -126,7 +126,7 @@ def _get_dtensor_strategy(op: OpOverload) -> str:
         if DecompShardingStrategy.has_decomp(op):
             return "decomp-fallback"
         return "missing"
-    except ImportError:
+    except Exception:
         return "missing"
 
 
