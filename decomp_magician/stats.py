@@ -82,7 +82,7 @@ def compute_stats(compile: bool = False, dtensor: bool = False) -> StatsResult:
 
         try:
             cls = classify(op, dtensor=dtensor)
-        except (AttributeError, Exception):
+        except Exception:
             classify_errors += 1
             continue
 

@@ -1,8 +1,41 @@
 """Tests for decomposition tree construction."""
 
+import pytest
 import torch
 
-from decomp_magician.tree import build_tree, collect_leaf_counts, _trace_decomp, _make_meta_args
+from decomp_magician.classify import OpClass
+from decomp_magician.tree import DecompNode, build_tree, collect_leaf_counts, _trace_decomp, _make_meta_args
+
+
+class TestDecompNodeInvariants:
+    def test_untraceable_with_children_raises(self):
+        """Untraceable node cannot have children."""
+        op = torch.ops.aten.mul.Tensor
+        child = DecompNode(op=op)
+        with pytest.raises(ValueError, match="Untraceable node cannot have children"):
+            DecompNode(op=op, children=(child,), traceable=False)
+
+    def test_error_with_traceable_raises(self):
+        """Node with error must be untraceable."""
+        op = torch.ops.aten.mul.Tensor
+        with pytest.raises(ValueError, match="Node with error must be untraceable"):
+            DecompNode(op=op, traceable=True, error="something failed")
+
+    def test_valid_untraceable_node(self):
+        """Untraceable node with no children and an error is valid."""
+        op = torch.ops.aten.mul.Tensor
+        node = DecompNode(op=op, traceable=False, error="test error")
+        assert not node.traceable
+        assert node.error == "test error"
+        assert node.children == ()
+
+    def test_valid_traceable_with_children(self):
+        """Traceable node with children is valid."""
+        op = torch.ops.aten.mul.Tensor
+        child = DecompNode(op=op)
+        parent = DecompNode(op=op, children=(child,), classification=OpClass("table"))
+        assert parent.traceable
+        assert len(parent.children) == 1
 
 
 class TestTraceDecomp:

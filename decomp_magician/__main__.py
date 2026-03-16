@@ -153,61 +153,53 @@ _BLUE = "\033[34m"
 _MAGENTA = "\033[35m"
 
 
-@dataclass
+@dataclass(frozen=True)
 class PurityResult:
     """Purity analysis of a decomposition tree."""
     op: str
     is_pure: bool  # no mutable or ADIOV leaves
     total_leaves: int
-    mutable_leaves: list[tuple[str, int]]  # (op_name, count)
-    adiov_leaves: list[tuple[str, int]]  # (op_name, count) — leaves with ADIOV kernel
-    mode_sensitive_leaves: list[tuple[str, int]]  # leaves with non-FT autograd
-
-
-@dataclass
-class _LeafInfo:
-    name: str
-    count: int
-    is_mutable: bool
-    has_adiov: bool
-    mode_sensitive: bool
+    mutable_leaves: tuple[tuple[str, int], ...]  # (op_name, count)
+    adiov_leaves: tuple[tuple[str, int], ...]  # (op_name, count) — leaves with ADIOV kernel
+    mode_sensitive_leaves: tuple[tuple[str, int], ...]  # leaves with non-FT autograd
 
 
 def _analyze_purity(node: DecompNode) -> PurityResult:
     """Analyze purity of a decomposition tree."""
-    leaf_infos: dict[str, _LeafInfo] = {}
+    counts: Counter[str] = Counter()
+    mutable_names: set[str] = set()
+    adiov_names: set[str] = set()
+    mode_sensitive_names: set[str] = set()
 
     def walk(n: DecompNode, multiplier: int = 1) -> None:
         if len(n.children) == 0:
             name = op_display_name(n.op)
-            if name not in leaf_infos:
+            counts[name] += multiplier
+            if name not in mutable_names and name not in adiov_names:
                 dinfo = get_dispatch_info_cached(n.op)
-                leaf_infos[name] = _LeafInfo(
-                    name=name,
-                    count=0,
-                    is_mutable=n.classification.is_mutable,
-                    has_adiov=dinfo.has_adiov,
-                    mode_sensitive=dinfo.mode_sensitive,
-                )
-            leaf_infos[name].count += multiplier
+                if n.classification.is_mutable:
+                    mutable_names.add(name)
+                if dinfo.has_adiov:
+                    adiov_names.add(name)
+                if dinfo.mode_sensitive:
+                    mode_sensitive_names.add(name)
             return
         for c in n.children:
             walk(c, multiplier * c.count)
 
     walk(node)
 
-    mutable = [(li.name, li.count) for li in leaf_infos.values() if li.is_mutable]
-    adiov = [(li.name, li.count) for li in leaf_infos.values() if li.has_adiov]
-    ms = [(li.name, li.count) for li in leaf_infos.values() if li.mode_sensitive]
-    is_pure = len(mutable) == 0 and len(adiov) == 0
+    mutable = sorted(((n, counts[n]) for n in mutable_names), key=lambda x: -x[1])
+    adiov = sorted(((n, counts[n]) for n in adiov_names), key=lambda x: -x[1])
+    ms = sorted(((n, counts[n]) for n in mode_sensitive_names), key=lambda x: -x[1])
 
     return PurityResult(
         op=op_display_name(node.op),
-        is_pure=is_pure,
-        total_leaves=len(leaf_infos),
-        mutable_leaves=sorted(mutable, key=lambda x: -x[1]),
-        adiov_leaves=sorted(adiov, key=lambda x: -x[1]),
-        mode_sensitive_leaves=sorted(ms, key=lambda x: -x[1]),
+        is_pure=len(mutable) == 0 and len(adiov) == 0,
+        total_leaves=len(counts),
+        mutable_leaves=tuple(mutable),
+        adiov_leaves=tuple(adiov),
+        mode_sensitive_leaves=tuple(ms),
     )
 
 

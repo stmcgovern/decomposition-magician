@@ -15,19 +15,20 @@ def _search_tree(node: DecompNode, target: str) -> tuple[Counter[str], int | Non
     Returns (all_ops_counter, shallowest_target_depth_or_None).
     """
     ops: Counter[str] = Counter()
-    best_depth: list[int | None] = [None]
+    best_depth: int | None = None
 
     def walk(n: DecompNode, multiplier: int = 1, depth: int = 0) -> None:
+        nonlocal best_depth
         name = op_display_name(n.op)
         ops[name] += multiplier
         if name == target and depth > 0:
-            if best_depth[0] is None or depth < best_depth[0]:
-                best_depth[0] = depth
+            if best_depth is None or depth < best_depth:
+                best_depth = depth
         for c in n.children:
             walk(c, multiplier * c.count, depth + 1)
 
     walk(node)
-    return ops, best_depth[0]
+    return ops, best_depth
 
 
 def _get_all_decomposable_ops() -> list[OpOverload]:

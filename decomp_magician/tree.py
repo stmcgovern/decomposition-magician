@@ -30,6 +30,12 @@ class DecompNode:
     traceable: bool = True
     error: str | None = None
 
+    def __post_init__(self):
+        if not self.traceable and self.children:
+            raise ValueError("Untraceable node cannot have children")
+        if self.error is not None and self.traceable:
+            raise ValueError("Node with error must be untraceable")
+
 
 def collect_leaf_counts(node: DecompNode) -> Counter[str]:
     """Collect leaf ops with propagated counts.
