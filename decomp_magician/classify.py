@@ -139,6 +139,8 @@ def _get_dtensor_strategy(op: OpOverload) -> str:
             return "registered"
         if op in prop.op_single_dim_strategy_funcs:
             return "registered"
+        if hasattr(prop, "op_to_rules") and op in prop.op_to_rules:
+            return "registered"
         # Check decomp fallback
         from torch.distributed.tensor._decompositions import (
             DecompShardingStrategy,
