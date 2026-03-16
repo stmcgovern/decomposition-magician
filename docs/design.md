@@ -82,7 +82,7 @@ per-op annotations. No TUI framework, no web server, no dependencies beyond
 PyTorch.
 
 ```
-$ python -m decomp_magician batch_norm_legit --dtensor
+$ decomp-magician batch_norm_legit --dtensor
 
 aten._native_batch_norm_legit.default  [table]
 ├── aten.var_mean.correction           [table]
@@ -151,7 +151,7 @@ decomp reverse prims.mul.default   # reverse lookup
 This removes the need for mutually-exclusive flag validation, makes
 `--help` per-subcommand instead of a wall of text, and lets each
 subcommand define only the flags it accepts (e.g. `--include-out` only
-on `reverse`). The bare `decomp_magician <op>` invocation should
+on `reverse`). The bare `decomp-magician <op>` invocation should
 remain as a shortcut for `decomp tree <op>` for backwards
 compatibility.
 
@@ -178,5 +178,5 @@ forward and backward trees would help autograd debugging.
 ### Git-diff mode
 
 Compare decomposition trees before/after a code change:
-`decomp_magician logsumexp --git-diff HEAD~1`. Useful for validating
+`decomp-magician logsumexp --git-diff HEAD~1`. Useful for validating
 PyTorch PRs that modify decomposition tables or schemas.

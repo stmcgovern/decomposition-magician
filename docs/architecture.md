@@ -5,14 +5,14 @@
 One CLI command. No TUI, no dependencies beyond PyTorch.
 
 ```
-python -m decomp_magician <op_name> [--depth N] [--compile] [--leaves] [--reverse] [--mermaid] [--dot] [--dtensor] [--json] [--verbose]
-python -m decomp_magician --stats [--compile] [--json]
+decomp-magician <op_name> [--depth N] [--compile] [--leaves] [--reverse] [--mermaid] [--dot] [--dtensor] [--json] [--verbose]
+decomp-magician --stats [--compile] [--json]
 ```
 
 Prints a decomposition tree to stdout with per-op annotations.
 
 ```
-$ python -m decomp_magician aten._native_batch_norm_legit
+$ decomp-magician aten._native_batch_norm_legit
 
 aten._native_batch_norm_legit.default  [table]
 ├── aten.var_mean.correction  [table, inductor-kept]
@@ -27,7 +27,7 @@ aten._native_batch_norm_legit.default  [table]
 
 With `--dtensor`:
 ```
-$ python -m decomp_magician aten._native_batch_norm_legit --dtensor
+$ decomp-magician aten._native_batch_norm_legit --dtensor
 
 aten._native_batch_norm_legit.default  [table]  dtensor: ok (via decomp)
 ├── ...
@@ -262,7 +262,7 @@ are validated with clear error messages.
 
 ```
 decomposition-magician/
-├── decomp_magician/        # the package (7 modules)
+├── decomp_magician/        # Python package (import decomp_magician)
 ├── tests/                  # pytest suite (136 tests)
 ├── docs/                   # design docs and investigation
 ├── pyproject.toml           # minimal: name, version, requires pytorch
@@ -270,7 +270,7 @@ decomposition-magician/
 ```
 
 Install: `pip install .` or `pip install decomposition-magician`
-Run: `decomp-magician batch_norm` or `python -m decomp_magician batch_norm`
+Run: `decomp-magician batch_norm`
 
 `pyproject.toml` declares PyTorch as the only dependency. DTensor is
 optional — the tool works without it; `--dtensor` requires

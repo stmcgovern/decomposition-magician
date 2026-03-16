@@ -7,7 +7,7 @@ Answer questions about PyTorch operator decompositions from the command line.
 - *Does this op decompose fully to core ATen?*
 - *Which ops produce `squeeze.dims` as a child?*
 
-PyTorch has 1000+ decomposable operators spread across two mechanisms (CompositeImplicitAutograd kernels and explicit decomposition tables). The decompositions are recursive and the metadata is scattered. This tool traces them automatically, classifies every op, and shows the result.
+PyTorch's operator decompositions are recursive and the metadata is scattered across multiple subsystems. This tool makes that implicit structure observable — it traces decompositions automatically, classifies every op, and shows the result.
 
 ```mermaid
 graph TD
@@ -42,7 +42,7 @@ graph TD
 pip install git+https://github.com/stmcgovern/decomposition-magician.git
 ```
 
-Requires Python 3.10+ and PyTorch 2.0+.
+Requires Python 3.10+ and an existing, recent PyTorch installation (2.0+). The tool inspects whatever PyTorch you have — it does not install or constrain the version.
 
 ## What does torch.compile actually run?
 
@@ -64,7 +64,7 @@ aten._native_batch_norm_legit.default decomposes to:
 9 unique ops, 27 total instances
 ```
 
-`--compile` treats inductor-kept ops as leaves (Inductor has direct lowerings for these). `--leaves` shows the flat frontier with propagated counts.
+`--compile` treats inductor-kept ops as leaves. These are ops that *have* decompositions but Inductor deliberately skips them in favor of its own optimized lowerings. `--leaves` shows the flat frontier with propagated counts.
 
 ## Decomposition trees
 
@@ -101,19 +101,36 @@ Op names are resolved flexibly — bare names, fully qualified, C++ format (`ate
 | `[CIA]` | CompositeImplicitAutograd kernel |
 | `[both]` | Has both table and CIA decompositions |
 | `[leaf]` | No decomposition; terminal op |
-| `inductor-kept` | Inductor uses a direct lowering instead of decomposing |
+| `inductor-kept` | Has a decomposition, but Inductor skips it — uses a direct lowering instead |
 | `untraceable` | Decomposition exists but could not be traced on meta tensors |
 
 ## More examples
 
-**Reverse lookup** — which ops produce a given child op?
-```
-$ decomp-magician aten.squeeze.dims --reverse --depth 1
-```
-
 **Diff** — what changes between full and compile mode?
 ```
 $ decomp-magician softmax --diff
+
+aten.softmax.int  (full)  vs  aten.softmax.int  (compile)
+
+Removed  (in aten.softmax.int only):
+  - aten.expand.default  x2
+  - prims.sub.default  x1
+  - prims.exp.default  x1
+  - prims.sum.default  x1
+  - prims.div.default  x1
+
+Added  (in aten.softmax.int only):
+  + aten.sub.Tensor  x1
+  + aten.exp.default  x1
+  + aten.sum.dim_IntList  x1
+  + aten.div.Tensor  x1
+```
+
+In full decomposition, softmax reaches `prims` ops. In compile mode, Inductor keeps `sub`, `exp`, `sum`, `div` — they never decompose further.
+
+**Reverse lookup** — which ops produce a given child op?
+```
+$ decomp-magician aten.squeeze.dims --reverse --depth 1
 ```
 
 **Opset coverage** — does this op decompose fully to core ATen?
@@ -152,6 +169,8 @@ $ decomp-magician softmax --dot        # pipe to: dot -Tsvg > graph.svg
 ```
 
 ## Flags
+
+Start with `decomp-magician <op>`. Add `--compile` for torch.compile behavior, `--leaves` for the flat frontier.
 
 **Core:**
 

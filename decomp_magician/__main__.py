@@ -304,9 +304,15 @@ def _enrich_tree_with_dispatch(d: dict, node: DecompNode) -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
+    from importlib.metadata import version as pkg_version
+
     parser = argparse.ArgumentParser(
-        prog="decomp_magician",
+        prog="decomp-magician",
         description="Inspect PyTorch operator decomposition trees.",
+    )
+    parser.add_argument(
+        "--version", action="version",
+        version=f"%(prog)s {pkg_version('decomposition-magician')}",
     )
     parser.add_argument(
         "op",
@@ -437,16 +443,16 @@ def main(argv: list[str] | None = None) -> int:
         return _run_model(args)
 
     # All other modes require an op
-    if args.op is None:
-        print("Usage: decomp_magician <op> [options]", file=sys.stderr)
+    if args.op is None or args.op == "":
+        print("Usage: decomp-magician <op> [options]", file=sys.stderr)
         print("", file=sys.stderr)
         print("Examples:", file=sys.stderr)
-        print("  decomp_magician addcmul                  # decomposition tree", file=sys.stderr)
-        print("  decomp_magician batch_norm --compile      # compile-mode tree", file=sys.stderr)
-        print("  decomp_magician softmax --diff            # full vs compile diff", file=sys.stderr)
-        print("  decomp_magician addcmul --target-opset core_aten", file=sys.stderr)
-        print("  decomp_magician --stats                   # bulk statistics", file=sys.stderr)
-        print("  decomp_magician --model model.pt2 --target-opset core_aten", file=sys.stderr)
+        print("  decomp-magician addcmul                  # decomposition tree", file=sys.stderr)
+        print("  decomp-magician batch_norm --compile      # compile-mode tree", file=sys.stderr)
+        print("  decomp-magician softmax --diff            # full vs compile diff", file=sys.stderr)
+        print("  decomp-magician addcmul --target-opset core_aten", file=sys.stderr)
+        print("  decomp-magician --stats                   # bulk statistics", file=sys.stderr)
+        print("  decomp-magician --model model.pt2 --target-opset core_aten", file=sys.stderr)
         print("", file=sys.stderr)
         print("Run with --help for all options.", file=sys.stderr)
         return 1

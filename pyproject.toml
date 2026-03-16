@@ -22,7 +22,7 @@ classifiers = [
     "Topic :: Software Development :: Testing",
     "Topic :: Software Development :: Libraries :: Python Modules",
 ]
-dependencies = ["torch>=2.0"]
+dependencies = []
 
 [project.optional-dependencies]
 test = ["pytest>=7.0"]
