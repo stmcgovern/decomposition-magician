@@ -123,6 +123,7 @@ _SMALL_SHAPE = [3]
 _SMALL_NAMES = ("weight", "bias", "mean", "var", "scale", "zero_point")
 _SCALAR_NAMES = ("value", "fill_value", "other")
 _INDEX_NAMES = ("indices", "index")
+_MASK_NAMES = ("mask", "condition")
 
 
 def _make_meta_tensor(name: str) -> torch.Tensor:
@@ -131,9 +132,12 @@ def _make_meta_tensor(name: str) -> torch.Tensor:
     # Scalar tensors (0-D) for value-like args
     if name_lower in _SCALAR_NAMES:
         return torch.empty([], device="meta")
-    # Index tensors need int64 dtype
+    # Index tensors need 1D int64 (index_add, index_copy, etc. require 1D)
     if name_lower in _INDEX_NAMES:
-        return torch.empty(_DEFAULT_SHAPE, device="meta", dtype=torch.int64)
+        return torch.empty([_DEFAULT_SHAPE[0]], device="meta", dtype=torch.int64)
+    # Mask/condition tensors need bool dtype
+    if name_lower in _MASK_NAMES:
+        return torch.empty(_DEFAULT_SHAPE, device="meta", dtype=torch.bool)
     # 1D for weight/bias/mean/var-like args
     if any(n in name_lower for n in _SMALL_NAMES):
         return torch.empty(_SMALL_SHAPE, device="meta")
@@ -244,11 +248,12 @@ def _trace_decomp_uncached(op: OpOverload) -> tuple[OpOverload, ...] | str:
     """Run the decomposition and record which ops are called (no caching).
 
     Tries multiple input configurations to maximize traceability:
-    1. Default shapes ([2,3,4,4] for general, [3] for weight-like)
+    1. Default shapes ([2,3,4,4] for general, 1D for index, bool for masks)
     2. Flipped booleans (e.g. half_to_float=True needs half input)
     3. Filled optional scalars (e.g. clamp needs min or max non-None)
-    4. Integer dtype for ops requiring integral tensors
-    5. Alternative shapes via _ALT_SHAPES — varying dimensionality (1D–5D),
+    4. Filled optional lists (e.g. upsample needs output_size or scale_factors)
+    5. Integer dtype for ops requiring integral tensors
+    6. Alternative shapes via _ALT_SHAPES — varying dimensionality (1D–5D),
        spatial sizes, and channel configurations. In this mode, "weight" args
        get the full shape (for conv ops) and optional "bias" is set to None.
     """
@@ -281,13 +286,27 @@ def _trace_decomp_uncached(op: OpOverload) -> tuple[OpOverload, ...] | str:
         if isinstance(retry, tuple):
             return retry
 
-    # Retry with integer dtype for ops that require integral tensors
+    # Retry with optional lists filled in (e.g. upsample_nearest2d.vec
+    # needs exactly one of output_size or scale_factors)
+    filled_lists = _fill_optional_lists(op, args, kwargs)
+    if filled_lists is not None:
+        retry = _try_trace(decomp_fn, *filled_lists)
+        if isinstance(retry, tuple):
+            return retry
+
+    # Retry with integer dtype for ops that require integral tensors.
+    # Preserve bool tensors (masks) and tensors already integral.
     if "integral" in result or "int" in result.lower():
         int_args = [
-            a.to(torch.int64) if isinstance(a, torch.Tensor) else a for a in args
+            a.to(torch.int64)
+            if isinstance(a, torch.Tensor) and a.dtype.is_floating_point
+            else a
+            for a in args
         ]
         int_kwargs = {
-            k: v.to(torch.int64) if isinstance(v, torch.Tensor) else v
+            k: v.to(torch.int64)
+            if isinstance(v, torch.Tensor) and v.dtype.is_floating_point
+            else v
             for k, v in kwargs.items()
         }
         retry = _try_trace(decomp_fn, int_args, int_kwargs)
@@ -336,7 +355,9 @@ def _make_arg_with_shape(arg, shape: list[int]):
         if name_lower in _SCALAR_NAMES:
             return torch.empty([], device="meta")
         if name_lower in _INDEX_NAMES:
-            return torch.empty(shape, device="meta", dtype=torch.int64)
+            return torch.empty([shape[0]], device="meta", dtype=torch.int64)
+        if name_lower in _MASK_NAMES:
+            return torch.empty(shape, device="meta", dtype=torch.bool)
         if name_lower == "weight":
             # Full shape — conv ops need weight with same dimensionality as input
             return torch.empty(shape, device="meta")
@@ -348,6 +369,12 @@ def _make_arg_with_shape(arg, shape: list[int]):
     if kind == "OptionalType":
         if "Tensor" in type_str:
             name_lower = arg.name.lower()
+            if name_lower in _SCALAR_NAMES:
+                return torch.empty([], device="meta")
+            if name_lower in _INDEX_NAMES:
+                return torch.empty([shape[0]], device="meta", dtype=torch.int64)
+            if name_lower in _MASK_NAMES:
+                return torch.empty(shape, device="meta", dtype=torch.bool)
             if name_lower == "weight":
                 return torch.empty(shape, device="meta")
             if name_lower == "bias":
@@ -435,6 +462,31 @@ def _fill_optional_scalars(op: OpOverload, args: list, kwargs: dict) -> tuple[li
     return (new_args, new_kwargs) if changed else None
 
 
+def _fill_optional_lists(op: OpOverload, args: list, kwargs: dict) -> tuple[list, dict] | None:
+    """Fill None optional list args with reasonable defaults.
+
+    Handles upsample ops that need exactly one of output_size or scale_factors.
+    """
+    changed = False
+    new_args = list(args)
+    pos_idx = 0
+    for arg in op._schema.arguments:
+        if arg.kwarg_only:
+            break
+        if arg.type.kind() == "OptionalType":
+            elem = str(arg.type)
+            if "int[]" in elem and pos_idx < len(new_args) and new_args[pos_idx] is None:
+                new_args[pos_idx] = [4]
+                changed = True
+                break  # Fill only the first optional list, then stop
+            if "float[]" in elem and pos_idx < len(new_args) and new_args[pos_idx] is None:
+                new_args[pos_idx] = [2.0]
+                changed = True
+                break
+        pos_idx += 1
+    return (new_args, kwargs) if changed else None
+
+
 def _try_trace(decomp_fn, args, kwargs) -> tuple[OpOverload, ...] | str:
     """Attempt to trace a decomposition function, returning ops or error."""
     recorder = _RecordingMode()
@@ -447,10 +499,11 @@ def _try_trace(decomp_fn, args, kwargs) -> tuple[OpOverload, ...] | str:
 
 
 def trace_backward(op: OpOverload) -> tuple[OpOverload, ...] | str:
-    """Run the op forward, then backward, recording ops dispatched during backward.
+    """Run the op forward, then compute gradients, recording dispatched ops.
 
-    Uses small CPU tensors with requires_grad=True. Returns a tuple of ops
-    called during the backward pass, or an error string.
+    Uses torch.autograd.grad with small CPU tensors to isolate the op's own
+    backward formula (without contamination from sum/reduce ops). Returns a
+    tuple of ops dispatched during gradient computation, or an error string.
     """
     schema = op._schema
 
@@ -479,28 +532,31 @@ def trace_backward(op: OpOverload) -> tuple[OpOverload, ...] | str:
     except Exception as e:
         return f"forward failed: {type(e).__name__}: {e}"
 
-    # Find a scalar output to call backward on
+    # Find differentiable outputs
     if isinstance(result, torch.Tensor):
-        out = result
+        outputs = [result] if result.requires_grad else []
     elif isinstance(result, (tuple, list)):
-        candidates = [t for t in result if isinstance(t, torch.Tensor) and t.requires_grad]
-        if not candidates:
-            return "no differentiable tensor output"
-        out = candidates[0]
+        outputs = [t for t in result if isinstance(t, torch.Tensor) and t.requires_grad]
     else:
         return f"unsupported output type: {type(result)}"
 
-    if not out.requires_grad:
-        return "output does not require grad"
+    if not outputs:
+        return "no differentiable tensor output"
 
-    # Reduce to scalar for backward
-    scalar_out = out.sum()
+    # Collect differentiable inputs for torch.autograd.grad
+    grad_inputs = [a for a in args if isinstance(a, torch.Tensor) and a.requires_grad]
+    if not grad_inputs:
+        return "no differentiable tensor input"
 
-    # Record ops during backward
+    # Use torch.autograd.grad to avoid recording sum's backward ops.
+    # Create grad_outputs matching the output shapes.
+    grad_outputs = [torch.ones_like(o) for o in outputs]
+
     recorder = _RecordingMode()
     try:
         with recorder:
-            scalar_out.backward()
+            torch.autograd.grad(outputs, grad_inputs, grad_outputs,
+                                allow_unused=True)
     except Exception as e:
         return f"backward failed: {type(e).__name__}: {e}"
 
@@ -508,15 +564,30 @@ def trace_backward(op: OpOverload) -> tuple[OpOverload, ...] | str:
 
 
 def _make_backward_arg(arg):
-    """Create a small CPU tensor arg suitable for backward tracing."""
+    """Create a small CPU tensor arg suitable for backward tracing.
+
+    Uses name heuristics to pick appropriate dtype: int64 for index args,
+    bool for masks (these don't require grad). All other tensors are float
+    with requires_grad=True.
+    """
     type_str = str(arg.type)
     kind = arg.type.kind()
 
     if kind == "TensorType":
+        name_lower = arg.name.lower()
+        if name_lower in _INDEX_NAMES:
+            return torch.zeros([2], dtype=torch.int64)
+        if name_lower in _MASK_NAMES:
+            return torch.ones([2, 3], dtype=torch.bool)
         return torch.randn([2, 3], requires_grad=True)
 
     if kind == "OptionalType":
         if "Tensor" in type_str:
+            name_lower = arg.name.lower()
+            if name_lower in _INDEX_NAMES:
+                return torch.zeros([2], dtype=torch.int64)
+            if name_lower in _MASK_NAMES:
+                return torch.ones([2, 3], dtype=torch.bool)
             return torch.randn([2, 3], requires_grad=True)
         if arg.default_value is not None:
             return arg.default_value

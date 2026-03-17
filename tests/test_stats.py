@@ -78,6 +78,41 @@ class TestComputeStats:
             )
 
 
+    def test_untraceable_ops_populated(self):
+        """untraceable_ops should contain (name, reason) tuples."""
+        data = compute_stats()
+        assert len(data.untraceable_ops) == data.untraceable
+        for name, reason in data.untraceable_ops:
+            assert isinstance(name, str)
+            assert isinstance(reason, str)
+            assert "aten." in name or "prims." in name
+
+    def test_untraceable_ops_list_invariant_rejects_bad_data(self):
+        """StatsResult raises ValueError if untraceable_ops count doesn't match."""
+        import pytest
+        with pytest.raises(ValueError, match="Untraceable ops list invariant"):
+            StatsResult(
+                total=100, total_non_out=50, by_type={"table": 50}, inductor_kept=0,
+                traceable=40, untraceable=10, classify_errors=0,
+                leaf_ops=Counter(), deepest=[],
+                untraceable_ops=[("aten.foo.default", "error")] * 5,  # 5 != 10
+            )
+
+    def test_dtensor_partition_invariant_rejects_bad_data(self):
+        """StatsResult raises ValueError if dtensor partition doesn't sum correctly."""
+        import pytest
+        with pytest.raises(ValueError, match="DTensor partition invariant"):
+            StatsResult(
+                total=100, total_non_out=50, by_type={"table": 50}, inductor_kept=0,
+                traceable=50, untraceable=0, classify_errors=0,
+                leaf_ops=Counter(), deepest=[],
+                dtensor=DtensorStats(
+                    registered=10, decomp_fallback=10, missing=10,  # 30 != 50
+                    fully_covered=0, has_gaps=0, top_uncovered=[],
+                ),
+            )
+
+
 class TestStatsCli:
     def test_stats_flag(self, capsys):
         assert main(["--stats"]) == 0
@@ -92,6 +127,16 @@ class TestStatsCli:
         assert "total" in data
         assert "top_leaf_ops" in data
         assert "classify_errors" in data
+        assert "untraceable_ops" in data
+        assert isinstance(data["untraceable_ops"], list)
+        if data["untraceable_ops"]:
+            assert "op" in data["untraceable_ops"][0]
+            assert "error" in data["untraceable_ops"][0]
+
+    def test_stats_text_shows_error_breakdown(self, capsys):
+        assert main(["--stats"]) == 0
+        out = capsys.readouterr().out
+        assert "Untraceable ops by error type" in out
 
     def test_stats_compile(self, capsys):
         assert main(["--stats", "--compile"]) == 0

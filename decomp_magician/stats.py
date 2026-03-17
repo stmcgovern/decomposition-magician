@@ -29,6 +29,9 @@ class StatsResult:
     Invariants (checked at construction time):
     1. traceable + untraceable + classify_errors == total_non_out
     2. sum(by_type.values()) == total_non_out - classify_errors
+    3. len(untraceable_ops) == untraceable
+    4. dtensor.registered + dtensor.decomp_fallback + dtensor.missing
+       == total_non_out - classify_errors  (when dtensor is not None)
     """
     total: int
     total_non_out: int
@@ -39,6 +42,7 @@ class StatsResult:
     classify_errors: int
     leaf_ops: Counter[str]
     deepest: list[tuple[str, int]]
+    untraceable_ops: list[tuple[str, str]] = ()  # (op_name, error_reason)
     dtensor: DtensorStats | None = None
 
     def __post_init__(self):
@@ -59,6 +63,21 @@ class StatsResult:
                 f"!= total_non_out({self.total_non_out}) "
                 f"- classify_errors({self.classify_errors}) = {classified}"
             )
+        if len(self.untraceable_ops) != self.untraceable:
+            raise ValueError(
+                f"Untraceable ops list invariant violated: "
+                f"len(untraceable_ops)={len(self.untraceable_ops)} "
+                f"!= untraceable={self.untraceable}"
+            )
+        if self.dtensor is not None:
+            dt = self.dtensor
+            dt_sum = dt.registered + dt.decomp_fallback + dt.missing
+            if dt_sum != classified:
+                raise ValueError(
+                    f"DTensor partition invariant violated: "
+                    f"registered({dt.registered}) + decomp_fallback({dt.decomp_fallback}) "
+                    f"+ missing({dt.missing}) = {dt_sum} != {classified}"
+                )
 
 
 def compute_stats(compile: bool = False, dtensor: bool = False) -> StatsResult:
@@ -73,6 +92,7 @@ def compute_stats(compile: bool = False, dtensor: bool = False) -> StatsResult:
     classify_errors = 0
     leaf_ops: Counter[str] = Counter()
     depths: list[tuple[str, int]] = []
+    untraceable_list: list[tuple[str, str]] = []
     non_out_count = 0
 
     # DTensor tracking
@@ -112,12 +132,14 @@ def compute_stats(compile: bool = False, dtensor: bool = False) -> StatsResult:
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore")
                 node = build_tree(op, compile=compile, dtensor=dtensor)
-        except Exception:
+        except Exception as e:
             untraceable += 1
+            untraceable_list.append((name, f"{type(e).__name__}: {e}"))
             continue
 
         if not node.traceable:
             untraceable += 1
+            untraceable_list.append((name, node.error or "unknown"))
         else:
             traceable += 1
             if node.children:
@@ -157,6 +179,7 @@ def compute_stats(compile: bool = False, dtensor: bool = False) -> StatsResult:
         classify_errors=classify_errors,
         leaf_ops=leaf_ops,
         deepest=depths[:10],
+        untraceable_ops=untraceable_list,
         dtensor=dtensor_stats,
     )
 
@@ -168,7 +191,7 @@ def _tree_depth(node: DecompNode) -> int:
 
 
 def _collect_leaves(node: DecompNode, counter: Counter[str]) -> None:
-    """Collect unique leaf op names from a tree (not propagated counts)."""
+    """Count leaf op appearances across tree branches (not propagated counts)."""
     if not node.children:
         counter[op_display_name(node.op)] += 1
         return

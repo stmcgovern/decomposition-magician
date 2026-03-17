@@ -663,6 +663,10 @@ def _run_stats(args) -> int:
             json_data["opset"] = args.target_opset
             json_data["leaf_ops_in_opset"] = len(covered)
             json_data["leaf_ops_not_in_opset"] = sorted(non_covered)
+        json_data["untraceable_ops"] = [
+            {"op": name, "error": reason}
+            for name, reason in data.untraceable_ops
+        ]
         if data.dtensor:
             dt = data.dtensor
             json_data["dtensor"] = {
@@ -712,6 +716,18 @@ def _run_stats(args) -> int:
     lines.append(_c(_BOLD, "Deepest decomposition chains") + ":")
     for name, depth in data.deepest:
         lines.append(f"  {name:<50}  depth {depth}")
+
+    # Untraceable ops breakdown
+    if data.untraceable_ops:
+        # Group by error type
+        err_categories: Counter[str] = Counter()
+        for _, reason in data.untraceable_ops:
+            err_type = reason.split(":")[0].strip() if ":" in reason else reason
+            err_categories[err_type] += 1
+        lines.append("")
+        lines.append(_c(_BOLD, "Untraceable ops by error type") + ":")
+        for err_type, count in err_categories.most_common():
+            lines.append(f"  {count:>4}  {err_type}")
 
     # Opset coverage analysis
     if args.target_opset:
@@ -903,7 +919,7 @@ def _run_diff(op, args) -> int:
 
 
 def _run_backward(op, args) -> int:
-    """Show ops dispatched during backward pass."""
+    """Show ops dispatched during gradient computation."""
     from collections import Counter
 
     result = trace_backward(op)
