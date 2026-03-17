@@ -93,7 +93,6 @@ def format_tree(node: DecompNode, prefix: str = "", is_last: bool = True, is_roo
     return "\n".join(lines)
 
 
-
 def _format_annotation(node: DecompNode, ancestor_has_dtensor: bool = False) -> str:
     """Format the bracket annotation for a node."""
     parts = []

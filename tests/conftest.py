@@ -2,6 +2,7 @@
 
 import pytest
 import torch
+from torch._ops import OpOverload
 
 
 @pytest.fixture(autouse=True)
@@ -37,6 +38,8 @@ def inductor_kept_op():
 
     kept_names = _build_inductor_kept()
     for op in decomposition_table:
+        if not isinstance(op, OpOverload):
+            continue
         if op.name() in kept_names:
             return op
     pytest.skip("No inductor-kept ops in this PyTorch build")
@@ -50,6 +53,8 @@ def non_inductor_kept_decomposable_op():
 
     kept_names = _build_inductor_kept()
     for op in decomposition_table:
+        if not isinstance(op, OpOverload):
+            continue
         if op.name() not in kept_names:
             return op
     pytest.skip("All decomposable ops are inductor-kept in this PyTorch build")
