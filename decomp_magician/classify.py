@@ -135,6 +135,7 @@ def _get_dtensor_propagator():
 
 def _get_dtensor_strategy(op: OpOverload) -> str:
     """Check DTensor sharding strategy registration status."""
+    # Check registered strategies (DTensor has an explicit handler).
     try:
         prop = _get_dtensor_propagator()
         if op in prop.op_strategy_funcs:
@@ -143,21 +144,27 @@ def _get_dtensor_strategy(op: OpOverload) -> str:
             return "registered"
         if hasattr(prop, "op_to_rules") and op in prop.op_to_rules:
             return "registered"
-        # Check decomp fallback
+    except Exception:
+        pass
+
+    # Check DTensor's own decomposition awareness.
+    try:
         from torch.distributed.tensor._decompositions import (
             DecompShardingStrategy,
         )
 
         if DecompShardingStrategy.has_decomp(op):
             return "decomp-fallback"
-        if op._can_decompose():
-            # CIA ops auto-decompose before DTensor dispatch, so DTensor
-            # handles the children via fallback — same as table decomps.
-            return "decomp-fallback"
-        # Only true leaf ops (no decomposition at all) reach here.
-        return "missing"
     except Exception:
-        return "missing"
+        pass
+
+    # CIA ops auto-decompose before DTensor dispatch, so DTensor
+    # handles the children via fallback — same as table decomps.
+    # This check is independent of DTensor imports.
+    if op._can_decompose():
+        return "decomp-fallback"
+
+    return "missing"
 
 
 def classify(op: OpOverload, dtensor: bool = False, dispatch: bool = False) -> OpClass:
