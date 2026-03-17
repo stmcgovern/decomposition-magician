@@ -133,6 +133,72 @@ class TestTags:
         assert all(isinstance(t, str) for t in cls.tags)
 
 
+class TestDtensorStrategy:
+    def test_leaf_op_is_missing(self):
+        """A true leaf op (no decomposition) should be 'missing' or 'registered'."""
+        op = torch.ops.aten.mm.default
+        cls = classify(op, dtensor=True)
+        assert cls.dtensor_strategy in ("registered", "missing")
+
+    def test_decomposable_op_never_missing(self):
+        """Any op that decomposes (table or CIA) must not be 'missing'.
+
+        If an op can decompose, DTensor handles its children via the fallback
+        path, so it should be 'registered' or 'decomp-fallback' — never 'missing'.
+        """
+        from torch._decomp import decomposition_table
+        from torch._ops import OpOverload
+
+        checked = 0
+        for op in decomposition_table:
+            if not isinstance(op, OpOverload):
+                continue
+            cls = classify(op, dtensor=True)
+            assert cls.dtensor_strategy != "missing", (
+                f"{op.name()} is decomposable (decomp_type={cls.decomp_type}) "
+                f"but dtensor_strategy='missing'"
+            )
+            checked += 1
+            if checked >= 20:
+                break
+        assert checked > 0
+
+    def test_cia_only_op_never_missing(self):
+        """A CIA-only op (not in decomposition_table) must not be 'missing'.
+
+        This is the key property: CIA ops auto-decompose before DTensor
+        dispatch, so DTensor handles the children via fallback.
+        Discovered at runtime so the test works across PyTorch versions.
+        """
+        from torch._decomp import decomposition_table
+        from torch._ops import OpOverload
+
+        # Find a CIA-only op (not in table, but _can_decompose)
+        cia_op = None
+        for name in dir(torch.ops.aten):
+            try:
+                packet = getattr(torch.ops.aten, name)
+                if not hasattr(packet, "default"):
+                    continue
+                op = packet.default
+                if not isinstance(op, OpOverload):
+                    continue
+                if op not in decomposition_table and op._can_decompose():
+                    cia_op = op
+                    break
+            except Exception:
+                continue
+        if cia_op is None:
+            pytest.skip("No CIA-only ops found on this PyTorch version")
+
+        cls = classify(cia_op, dtensor=True)
+        assert cls.dtensor_strategy in ("registered", "decomp-fallback"), (
+            f"{cia_op.name()} is CIA-only (_can_decompose()=True, "
+            f"not in decomposition_table) but "
+            f"dtensor_strategy={cls.dtensor_strategy!r}"
+        )
+
+
 class TestOpClassValidation:
     def test_invalid_decomp_type_raises(self):
         with pytest.raises(ValueError, match="Invalid decomp_type"):
