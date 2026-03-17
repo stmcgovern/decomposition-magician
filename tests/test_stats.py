@@ -53,12 +53,27 @@ class TestComputeStats:
         assert data.traceable + data.untraceable + data.classify_errors == data.total_non_out
 
     def test_accounting_invariant_rejects_bad_data(self):
-        """StatsResult raises ValueError if invariant is violated."""
+        """StatsResult raises ValueError if traceability accounting is wrong."""
         import pytest
         with pytest.raises(ValueError, match="Accounting invariant"):
             StatsResult(
-                total=100, total_non_out=50, by_type={}, inductor_kept=0,
+                total=100, total_non_out=50, by_type={"table": 50}, inductor_kept=0,
                 traceable=10, untraceable=10, classify_errors=0,
+                leaf_ops=Counter(), deepest=[],
+            )
+
+    def test_type_accounting_invariant(self):
+        """sum(by_type.values()) must equal total_non_out - classify_errors."""
+        data = compute_stats()
+        assert sum(data.by_type.values()) == data.total_non_out - data.classify_errors
+
+    def test_type_accounting_rejects_bad_data(self):
+        """StatsResult raises ValueError if type accounting is wrong."""
+        import pytest
+        with pytest.raises(ValueError, match="Type accounting invariant"):
+            StatsResult(
+                total=100, total_non_out=50, by_type={"table": 40}, inductor_kept=0,
+                traceable=30, untraceable=20, classify_errors=0,
                 leaf_ops=Counter(), deepest=[],
             )
 

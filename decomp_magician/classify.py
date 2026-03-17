@@ -75,6 +75,8 @@ def _build_inductor_kept() -> set[str]:
 
         inductor_table = select_decomp_table()
         for op in decomposition_table:
+            if not isinstance(op, OpOverload):
+                continue
             if op not in inductor_table:
                 result.add(op.name())
     except Exception:

@@ -141,7 +141,12 @@ def _make_meta_tensor(name: str) -> torch.Tensor:
 
 
 def _make_arg(arg):
-    """Create a single argument value from schema info."""
+    """Create a single argument value from schema info.
+
+    Used for the initial trace attempt. Weight/bias args get 1D tensors
+    (suitable for batch_norm, layer_norm, etc.). See _make_arg_with_shape
+    for the retry variant where weight gets full-dimensional tensors.
+    """
     type_str = str(arg.type)
     kind = arg.type.kind()
 
@@ -240,12 +245,12 @@ def _trace_decomp_uncached(op: OpOverload) -> tuple[OpOverload, ...] | str:
 
     Tries multiple input configurations to maximize traceability:
     1. Default shapes ([2,3,4,4] for general, [3] for weight-like)
-    2. Flipped booleans (e.g. half_to_float)
-    3. Filled optional scalars (e.g. clamp)
-    4. Integer dtype for integral ops
-    5. Alternative shapes: 3D ([2,3,4]), 2D ([3,4]), 1D ([4])
-    6. Larger shapes: [2,4,8,8] for ops with stride/padding constraints
-    7. Square shapes: [2,3,4,4] -> [2,3,8,8] for conv-like ops
+    2. Flipped booleans (e.g. half_to_float=True needs half input)
+    3. Filled optional scalars (e.g. clamp needs min or max non-None)
+    4. Integer dtype for ops requiring integral tensors
+    5. Alternative shapes via _ALT_SHAPES — varying dimensionality (1D–5D),
+       spatial sizes, and channel configurations. In this mode, "weight" args
+       get the full shape (for conv ops) and optional "bias" is set to None.
     """
     decomp_fn = _get_decomp_fn(op)
     if decomp_fn is None:
@@ -304,16 +309,25 @@ def _trace_decomp_uncached(op: OpOverload) -> tuple[OpOverload, ...] | str:
 # Alternative shapes to try when the default [2,3,4,4] fails
 _ALT_SHAPES = [
     [2, 3, 4],      # 3D (batch, channels, length)
+    [3, 3, 4],      # 3D square channels (conv_transpose1d: weight[0]==input[1])
     [3, 4],          # 2D (matrix)
     [4],             # 1D (vector)
     [2, 4, 8, 8],   # 4D larger (for stride/padding constraints)
     [1, 3, 8, 8],   # 4D with batch=1, channels=3 (image-like)
     [2, 3, 6, 6],   # 4D divisible by 2 and 3
+    [3, 3, 4, 4],   # 4D square channels (conv_transpose2d)
+    [3, 3, 4, 4, 4],# 5D (conv3d / conv_transpose3d)
 ]
 
 
 def _make_arg_with_shape(arg, shape: list[int]):
-    """Create a single argument using a specific shape for tensors."""
+    """Create a single argument using a specific shape for tensors.
+
+    Unlike _make_arg, this gives "weight" args the full shape (not 1D).
+    This is critical for conv ops where weight must match input dimensionality.
+    Optional "bias" args are set to None since bias size depends on weight
+    shape in ways that vary by op (conv C_out vs batchnorm C).
+    """
     type_str = str(arg.type)
     kind = arg.type.kind()
 
@@ -323,8 +337,10 @@ def _make_arg_with_shape(arg, shape: list[int]):
             return torch.empty([], device="meta")
         if name_lower in _INDEX_NAMES:
             return torch.empty(shape, device="meta", dtype=torch.int64)
+        if name_lower == "weight":
+            # Full shape — conv ops need weight with same dimensionality as input
+            return torch.empty(shape, device="meta")
         if any(n in name_lower for n in _SMALL_NAMES):
-            # Weight shape should match the channels dim of the alt shape
             weight_size = shape[1] if len(shape) > 1 else shape[0]
             return torch.empty([weight_size], device="meta")
         return torch.empty(shape, device="meta")
@@ -332,6 +348,12 @@ def _make_arg_with_shape(arg, shape: list[int]):
     if kind == "OptionalType":
         if "Tensor" in type_str:
             name_lower = arg.name.lower()
+            if name_lower == "weight":
+                return torch.empty(shape, device="meta")
+            if name_lower == "bias":
+                # Skip optional bias — its size depends on weight shape which
+                # varies by op. None is always valid for optional args.
+                return None
             if any(n in name_lower for n in _SMALL_NAMES):
                 weight_size = shape[1] if len(shape) > 1 else shape[0]
                 return torch.empty([weight_size], device="meta")

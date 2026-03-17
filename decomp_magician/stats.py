@@ -26,8 +26,9 @@ class DtensorStats:
 class StatsResult:
     """Statistics across all decomposable ops.
 
-    Invariant: traceable + untraceable + classify_errors == total_non_out.
-    This is checked at construction time.
+    Invariants (checked at construction time):
+    1. traceable + untraceable + classify_errors == total_non_out
+    2. sum(by_type.values()) == total_non_out - classify_errors
     """
     total: int
     total_non_out: int
@@ -48,6 +49,15 @@ class StatsResult:
                 f"traceable({self.traceable}) + untraceable({self.untraceable}) "
                 f"+ classify_errors({self.classify_errors}) = {accounted} "
                 f"!= total_non_out({self.total_non_out})"
+            )
+        type_sum = sum(self.by_type.values())
+        classified = self.total_non_out - self.classify_errors
+        if type_sum != classified:
+            raise ValueError(
+                f"Type accounting invariant violated: "
+                f"sum(by_type) = {type_sum} "
+                f"!= total_non_out({self.total_non_out}) "
+                f"- classify_errors({self.classify_errors}) = {classified}"
             )
 
 

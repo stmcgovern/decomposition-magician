@@ -24,7 +24,7 @@ from decomp_magician.resolve import resolve_op
 from decomp_magician.reverse import reverse_lookup
 from decomp_magician.stats import compute_stats
 from decomp_magician.classify import DECOMP_TYPES, is_dtensor_intercept
-from decomp_magician.tree import DecompNode, build_tree, op_display_name, trace_backward
+from decomp_magician.tree import DecompNode, build_tree, collect_leaf_counts, op_display_name, trace_backward
 
 
 # ANSI color codes
@@ -168,26 +168,24 @@ class PurityResult:
 
 def _analyze_purity(node: DecompNode) -> PurityResult:
     """Analyze purity of a decomposition tree."""
-    counts: Counter[str] = Counter()
+    counts = collect_leaf_counts(node)
     mutable_names: set[str] = set()
     adiov_names: set[str] = set()
     mode_sensitive_names: set[str] = set()
 
-    def walk(n: DecompNode, multiplier: int = 1) -> None:
+    def walk(n: DecompNode) -> None:
         if not n.children:
             name = op_display_name(n.op)
-            counts[name] += multiplier
-            if name not in mutable_names and name not in adiov_names:
-                dinfo = get_dispatch_info_cached(n.op)
-                if n.classification.is_mutable:
-                    mutable_names.add(name)
-                if dinfo.has_adiov:
-                    adiov_names.add(name)
-                if dinfo.mode_sensitive:
-                    mode_sensitive_names.add(name)
+            dinfo = get_dispatch_info_cached(n.op)
+            if n.classification.is_mutable:
+                mutable_names.add(name)
+            if dinfo.has_adiov:
+                adiov_names.add(name)
+            if dinfo.mode_sensitive:
+                mode_sensitive_names.add(name)
             return
         for c in n.children:
-            walk(c, multiplier * c.count)
+            walk(c)
 
     walk(node)
 
@@ -1097,19 +1095,23 @@ class LeafFrontier(NamedTuple):
 
 
 def _collect_leaf_frontier(node: DecompNode) -> LeafFrontier:
-    """Walk a tree and collect the leaf frontier with propagated counts."""
-    frontier: Counter[str] = Counter()
+    """Walk a tree and collect the leaf frontier with propagated counts.
+
+    Counts come from collect_leaf_counts (single source of multiplicative
+    walk logic). A separate walk collects set-membership properties and
+    DTensor ancestor coverage.
+    """
+    counts = collect_leaf_counts(node)
     inductor_kept_ops: set[str] = set()
     untraceable_ops: set[str] = set()
     dtensor_uncovered_ops: set[str] = set()
 
-    def walk(n: DecompNode, multiplier: int = 1, ancestor_covered: bool = False) -> None:
+    def walk(n: DecompNode, ancestor_covered: bool = False) -> None:
         covered = ancestor_covered or is_dtensor_intercept(
             n.classification.dtensor_strategy
         )
         if not n.children:
             name = op_display_name(n.op)
-            frontier[name] += multiplier
             if n.classification.inductor_kept:
                 inductor_kept_ops.add(name)
             if not n.traceable:
@@ -1118,10 +1120,10 @@ def _collect_leaf_frontier(node: DecompNode) -> LeafFrontier:
                 dtensor_uncovered_ops.add(name)
             return
         for c in n.children:
-            walk(c, multiplier * c.count, covered)
+            walk(c, covered)
 
     walk(node)
-    return LeafFrontier(frontier, inductor_kept_ops, untraceable_ops, dtensor_uncovered_ops)
+    return LeafFrontier(counts, inductor_kept_ops, untraceable_ops, dtensor_uncovered_ops)
 
 
 def format_leaves(

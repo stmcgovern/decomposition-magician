@@ -184,6 +184,26 @@ class TestBuildTree:
         assert node.traceable is True
         assert len(node.children) > 0
 
+    def test_conv2d_traces(self):
+        """conv2d needs N-D weight matching input dimensionality."""
+        op = torch.ops.aten.conv2d.default
+        node = build_tree(op, depth=1)
+        assert node.traceable is True
+        child_names = [c.op.name() for c in node.children]
+        assert "aten::convolution" in child_names
+
+    def test_conv1d_traces(self):
+        """conv1d needs 3D weight."""
+        op = torch.ops.aten.conv1d.default
+        node = build_tree(op, depth=1)
+        assert node.traceable is True
+
+    def test_conv_transpose2d_traces(self):
+        """conv_transpose2d needs weight[0]==input[1] (square channels shape)."""
+        op = torch.ops.aten.conv_transpose2d.input
+        node = build_tree(op, depth=1)
+        assert node.traceable is True
+
     def test_leaf_frontier_correctness(self):
         """Verify the leaf frontier has correct propagated counts for addcmul.
 
