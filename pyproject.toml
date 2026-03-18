@@ -33,3 +33,9 @@ decomp-magician = "decomp_magician.__main__:main"
 [project.urls]
 Repository = "https://github.com/stmcgovern/decomposition-magician"
 Issues = "https://github.com/stmcgovern/decomposition-magician/issues"
+
+[tool.ruff]
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "W"]

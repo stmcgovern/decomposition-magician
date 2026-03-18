@@ -13,9 +13,7 @@ from typing import Callable, NamedTuple
 from decomp_magician.diff import compute_diff, compute_diff_ops
 from decomp_magician.dispatch import (
     DispatchInfo,
-    format_dispatch_detail,
     format_dispatch_short,
-    get_dispatch_info,
     get_dispatch_info_cached,
 )
 from decomp_magician.graph import format_dot, format_mermaid
@@ -231,7 +229,7 @@ def format_purity(result: PurityResult) -> str:
     if result.is_pure:
         lines.append(_c(_GREEN, "PURE") + f"  {result.op}")
         lines.append(f"  All {result.total_leaves} leaf ops are non-mutable with no ADIOV kernel.")
-        lines.append(f"  Behavior under inference_mode vs no_grad: " + _c(_GREEN, "identical"))
+        lines.append("  Behavior under inference_mode vs no_grad: " + _c(_GREEN, "identical"))
     else:
         lines.append(_c(_RED, "IMPURE") + f"  {result.op}")
         lines.append(f"  {result.total_leaves} leaf ops total")
@@ -255,10 +253,10 @@ def format_purity(result: PurityResult) -> str:
 
         if result.mode_sensitive_leaves:
             lines.append("")
-            lines.append(f"  Leaves differing under inference_mode vs no_grad: " +
-                         _c(_RED, f"{len(result.mode_sensitive_leaves)}"))
-            lines.append(f"  These leaves have autograd/ADIOV kernels whose dispatch")
-            lines.append(f"  path changes depending on the active gradient mode.")
+            lines.append("  Leaves differing under inference_mode vs no_grad: " +
+                         _c(_RED, str(len(result.mode_sensitive_leaves))))
+            lines.append("  These leaves have autograd/ADIOV kernels whose dispatch")
+            lines.append("  path changes depending on the active gradient mode.")
 
     return "\n".join(lines)
 
@@ -690,7 +688,7 @@ def _run_stats(args) -> int:
     trace_pct = data.traceable / data.total_non_out * 100 if data.total_non_out else 0
 
     lines = [
-        _c(_BOLD, f"Decomposition table statistics") + f"  ({mode} decomposition)",
+        _c(_BOLD, "Decomposition table statistics") + f"  ({mode} decomposition)",
         "",
         f"  Total ops in table:  {data.total}  ({data.total_non_out} excluding _out variants)",
     ]
@@ -743,7 +741,7 @@ def _run_stats(args) -> int:
 
         lines.append("")
         lines.append(
-            _c(_BOLD, f"Leaf op coverage") +
+            _c(_BOLD, "Leaf op coverage") +
             f"  (target: {args.target_opset})"
         )
         lines.append(
