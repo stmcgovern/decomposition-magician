@@ -55,7 +55,10 @@ def _c(code: str, text: str) -> str:
     return text
 
 
-def format_tree(node: DecompNode, prefix: str = "", is_last: bool = True, is_root: bool = True, ancestor_has_dtensor: bool = False) -> str:
+def format_tree(
+    node: DecompNode, prefix: str = "", is_last: bool = True,
+    is_root: bool = True, ancestor_has_dtensor: bool = False,
+) -> str:
     """Format a DecompNode tree as a string with box-drawing characters."""
     lines = []
 
@@ -86,7 +89,10 @@ def format_tree(node: DecompNode, prefix: str = "", is_last: bool = True, is_roo
     child_prefix = prefix + ("    " if is_last else "│   ") if not is_root else ""
     for i, child in enumerate(node.children):
         is_last_child = i == len(node.children) - 1
-        lines.append(format_tree(child, child_prefix, is_last_child, is_root=False, ancestor_has_dtensor=this_has_dtensor))
+        lines.append(format_tree(
+            child, child_prefix, is_last_child,
+            is_root=False, ancestor_has_dtensor=this_has_dtensor,
+        ))
 
     return "\n".join(lines)
 
@@ -775,7 +781,8 @@ def _run_stats(args) -> int:
         traceable_with_children = dt.fully_covered + dt.has_gaps
         if traceable_with_children > 0:
             cov_pct = dt.fully_covered / traceable_with_children * 100
-            lines.append(f"  Fully covered trees:   {_c(_GREEN, str(dt.fully_covered))}/{traceable_with_children} ({cov_pct:.0f}%)")
+            covered_str = _c(_GREEN, str(dt.fully_covered))
+            lines.append(f"  Fully covered trees:   {covered_str}/{traceable_with_children} ({cov_pct:.0f}%)")
             lines.append(f"  Trees with gaps:       {_c(_RED, str(dt.has_gaps))}")
 
         if dt.top_uncovered:
