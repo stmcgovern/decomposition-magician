@@ -151,14 +151,13 @@ def _make_arg(arg):
     (suitable for batch_norm, layer_norm, etc.). See _make_arg_with_shape
     for the retry variant where weight gets full-dimensional tensors.
     """
-    type_str = str(arg.type)
     kind = arg.type.kind()
 
     if kind == "TensorType":
         return _make_meta_tensor(arg.name)
 
     if kind == "OptionalType":
-        if "Tensor" in type_str:
+        if arg.type.getElementType().kind() == "TensorType":
             return _make_meta_tensor(arg.name)
         if arg.default_value is not None:
             return arg.default_value
@@ -350,7 +349,6 @@ def _make_arg_with_shape(arg, shape: list[int]):
     Optional "bias" args are set to None since bias size depends on weight
     shape in ways that vary by op (conv C_out vs batchnorm C).
     """
-    type_str = str(arg.type)
     kind = arg.type.kind()
 
     if kind == "TensorType":
@@ -370,7 +368,7 @@ def _make_arg_with_shape(arg, shape: list[int]):
         return torch.empty(shape, device="meta")
 
     if kind == "OptionalType":
-        if "Tensor" in type_str:
+        if arg.type.getElementType().kind() == "TensorType":
             name_lower = arg.name.lower()
             if name_lower in _SCALAR_NAMES:
                 return torch.empty([], device="meta")
@@ -439,15 +437,15 @@ def _fill_optional_scalars(op: OpOverload, args: list, kwargs: dict) -> tuple[li
             if not arg.kwarg_only:
                 pos_idx += 1
             continue
-        if "Tensor" in str(arg.type):
+        elem_kind = arg.type.getElementType().kind()
+        if elem_kind == "TensorType":
             if not arg.kwarg_only:
                 pos_idx += 1
             continue
-        elem = str(arg.type)
         fill_val = None
-        if "int" in elem:
+        if elem_kind == "IntType":
             fill_val = 0
-        elif "float" in elem or "number" in elem:
+        elif elem_kind in ("FloatType", "NumberType"):
             fill_val = 1.0
         if fill_val is None:
             if not arg.kwarg_only:
@@ -596,7 +594,6 @@ def _make_backward_arg(arg):
     bool for masks (these don't require grad). All other tensors are float
     with requires_grad=True.
     """
-    type_str = str(arg.type)
     kind = arg.type.kind()
 
     if kind == "TensorType":
@@ -608,7 +605,7 @@ def _make_backward_arg(arg):
         return torch.randn([2, 3], requires_grad=True)
 
     if kind == "OptionalType":
-        if "Tensor" in type_str:
+        if arg.type.getElementType().kind() == "TensorType":
             name_lower = arg.name.lower()
             if name_lower in _INDEX_NAMES:
                 return torch.zeros([2], dtype=torch.int64)

@@ -4,7 +4,6 @@ import torch
 
 from decomp_magician.dispatch import (
     DispatchEntry,
-    DispatchInfo,
     get_dispatch_info,
     get_dispatch_info_cached,
     format_dispatch_short,

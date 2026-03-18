@@ -490,14 +490,14 @@ class TestDtensorAncestorCoverage:
         leaf = self._make_node("missing")
         parent = self._make_node("decomp-fallback", children=[leaf])
         d = _leaves_to_dict(parent)
-        assert any(l.get("dtensor_uncovered") for l in d["leaves"])
+        assert any(entry.get("dtensor_uncovered") for entry in d["leaves"])
 
     def test_json_leaves_no_flag_when_covered(self):
         """JSON leaves output should not include dtensor_uncovered when covered."""
         leaf = self._make_node("missing")
         parent = self._make_node("registered", children=[leaf])
         d = _leaves_to_dict(parent)
-        assert not any(l.get("dtensor_uncovered") for l in d["leaves"])
+        assert not any(entry.get("dtensor_uncovered") for entry in d["leaves"])
 
     def test_cli_dtensor_decomposable_root_not_missing(self, capsys):
         """A decomposable op's root should never show dtensor: MISSING.
