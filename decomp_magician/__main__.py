@@ -1245,10 +1245,11 @@ def format_summary(node: DecompNode) -> str:
     counts = {dt: 0 for dt in DECOMP_TYPES}
     inductor_kept = 0
     dtensor_missing = 0
-    untraceable = 0
+    untraceable_nodes = 0
+    untraceable_names: set[str] = set()
 
     def walk(n: DecompNode, ancestor_covered: bool = False) -> None:
-        nonlocal inductor_kept, dtensor_missing, untraceable
+        nonlocal inductor_kept, dtensor_missing, untraceable_nodes
         dt = n.classification.decomp_type
         counts[dt] = counts.get(dt, 0) + 1
         if n.classification.inductor_kept:
@@ -1256,7 +1257,8 @@ def format_summary(node: DecompNode) -> str:
         if n.classification.dtensor_strategy == "missing" and not ancestor_covered:
             dtensor_missing += 1
         if not n.traceable:
-            untraceable += 1
+            untraceable_nodes += 1
+            untraceable_names.add(op_display_name(n.op))
         covered = ancestor_covered or is_dtensor_intercept(
             n.classification.dtensor_strategy
         )
@@ -1276,8 +1278,13 @@ def format_summary(node: DecompNode) -> str:
 
     if inductor_kept > 0:
         parts.append(_c(_YELLOW, f"{inductor_kept} inductor-kept"))
-    if untraceable > 0:
-        parts.append(_c(_RED, f"{untraceable} untraceable"))
+    if untraceable_names:
+        n_unique = len(untraceable_names)
+        op_word = "op" if n_unique == 1 else "ops"
+        if untraceable_nodes > n_unique:
+            parts.append(_c(_RED, f"{n_unique} untraceable {op_word} ({untraceable_nodes} nodes)"))
+        else:
+            parts.append(_c(_RED, f"{n_unique} untraceable"))
     has_dtensor = node.classification.dtensor_strategy is not None
     if has_dtensor:
         if dtensor_missing > 0:

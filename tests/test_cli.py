@@ -5,7 +5,11 @@ import json
 import pytest
 import torch
 
-from decomp_magician.__main__ import main, format_tree, format_leaves, format_summary, tree_to_dict, _leaves_to_dict
+from decomp_magician.__main__ import (
+    main, format_tree, format_leaves, format_summary, tree_to_dict,
+    _leaves_to_dict, _warn_untraceable, _add_untraceable_warnings,
+    _collect_untraceable_errors,
+)
 from decomp_magician.tree import build_tree, DecompNode
 from decomp_magician.classify import OpClass
 
@@ -287,6 +291,99 @@ class TestSummary:
         main(["addcmul", "--depth", "0"])
         captured = capsys.readouterr()
         assert "1 op" in captured.out
+
+    def test_untraceable_unique_count(self):
+        """Summary should count unique untraceable ops, not nodes."""
+        op = torch.ops.aten.mul.Tensor
+        cls_table = OpClass(decomp_type="table")
+        cls_leaf = OpClass(decomp_type="leaf")
+        # Same op appearing as untraceable 3 times
+        bad = DecompNode(op=op, classification=cls_leaf, traceable=False, error="fail")
+        root = DecompNode(op=op, children=(bad, bad, bad), classification=cls_table)
+        s = format_summary(root)
+        assert "1 untraceable op (3 nodes)" in s
+
+    def test_untraceable_no_parens_when_no_duplication(self):
+        """When each untraceable node is a different op, no parenthetical."""
+        op1 = torch.ops.aten.mul.Tensor
+        op2 = torch.ops.aten.add.Tensor
+        cls_table = OpClass(decomp_type="table")
+        cls_leaf = OpClass(decomp_type="leaf")
+        bad1 = DecompNode(op=op1, classification=cls_leaf, traceable=False, error="fail")
+        bad2 = DecompNode(op=op2, classification=cls_leaf, traceable=False, error="fail")
+        root = DecompNode(op=op1, children=(bad1, bad2), classification=cls_table)
+        s = format_summary(root)
+        assert "2 untraceable" in s
+        assert "nodes" not in s
+
+    def test_no_untraceable_in_summary(self):
+        """Fully traceable tree should not mention untraceable."""
+        node = build_tree(torch.ops.aten.addcmul.default, depth=1)
+        s = format_summary(node)
+        assert "untraceable" not in s
+
+
+class TestUntraceableWarnings:
+    """Tests for _warn_untraceable (stderr) and _add_untraceable_warnings (JSON)."""
+
+    def _make_tree_with_untraceable(self):
+        op = torch.ops.aten.mul.Tensor
+        cls_table = OpClass(decomp_type="table")
+        cls_leaf = OpClass(decomp_type="leaf")
+        bad = DecompNode(op=op, classification=cls_leaf, traceable=False, error="test error")
+        good = DecompNode(op=torch.ops.aten.add.Tensor, classification=cls_leaf)
+        return DecompNode(op=op, children=(bad, good), classification=cls_table)
+
+    def _make_clean_tree(self):
+        op = torch.ops.aten.mul.Tensor
+        cls_table = OpClass(decomp_type="table")
+        cls_leaf = OpClass(decomp_type="leaf")
+        child = DecompNode(op=op, classification=cls_leaf)
+        return DecompNode(op=op, children=(child,), classification=cls_table)
+
+    def test_collect_errors_finds_untraceable(self):
+        errors = _collect_untraceable_errors(self._make_tree_with_untraceable())
+        assert len(errors) == 1
+        assert errors[0][1] == "test error"
+
+    def test_collect_errors_empty_for_clean_tree(self):
+        errors = _collect_untraceable_errors(self._make_clean_tree())
+        assert len(errors) == 0
+
+    def test_collect_errors_deduplicates(self):
+        """Same op untraceable twice should appear once."""
+        op = torch.ops.aten.mul.Tensor
+        cls_table = OpClass(decomp_type="table")
+        cls_leaf = OpClass(decomp_type="leaf")
+        bad1 = DecompNode(op=op, classification=cls_leaf, traceable=False, error="err")
+        bad2 = DecompNode(op=op, classification=cls_leaf, traceable=False, error="err")
+        root = DecompNode(op=op, children=(bad1, bad2), classification=cls_table)
+        errors = _collect_untraceable_errors(root)
+        assert len(errors) == 1
+
+    def test_warn_untraceable_prints_stderr(self, capsys):
+        _warn_untraceable(self._make_tree_with_untraceable())
+        err = capsys.readouterr().err
+        assert "warning" in err
+        assert "1 op" in err
+        assert "test error" in err
+
+    def test_warn_untraceable_silent_for_clean_tree(self, capsys):
+        _warn_untraceable(self._make_clean_tree())
+        err = capsys.readouterr().err
+        assert err == ""
+
+    def test_add_warnings_to_json(self):
+        d = {}
+        _add_untraceable_warnings(d, self._make_tree_with_untraceable())
+        assert "warnings" in d
+        assert len(d["warnings"]) == 1
+        assert "could not trace" in d["warnings"][0]["message"]
+
+    def test_no_warnings_in_json_for_clean_tree(self):
+        d = {}
+        _add_untraceable_warnings(d, self._make_clean_tree())
+        assert "warnings" not in d
 
 
 class TestLeaves:
