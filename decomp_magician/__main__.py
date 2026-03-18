@@ -551,24 +551,26 @@ def main(argv: list[str] | None = None) -> int:
                 for leaf in d.get("leaves", []):
                     leaf["in_opset"] = is_core_aten(leaf["op"])
                 d["opset"] = args.target_opset
-            print(json.dumps(d, indent=2))
         else:
             d = tree_to_dict(node)
             if _show_dispatch or _show_mode_sensitivity:
                 _enrich_tree_with_dispatch(d, node)
-            print(json.dumps(d, indent=2))
+        _add_untraceable_warnings(d, node)
+        print(json.dumps(d, indent=2))
         return 0
 
     if args.mermaid:
         print(format_mermaid(node))
         print("", file=sys.stderr)
         print("Paste into ```mermaid fenced block in GitHub markdown to render.", file=sys.stderr)
+        _warn_untraceable(node)
         return 0
 
     if args.dot:
         print(format_dot(node))
         print("", file=sys.stderr)
         print("Pipe to: dot -Tsvg > graph.svg  or  dot -Tpng > graph.png", file=sys.stderr)
+        _warn_untraceable(node)
         return 0
 
     if args.leaves:
@@ -586,6 +588,7 @@ def main(argv: list[str] | None = None) -> int:
             print()
             _print_verbose(node)
 
+    _warn_untraceable(node)
     return 0
 
 
@@ -1278,6 +1281,52 @@ def format_summary(node: DecompNode) -> str:
             parts.append(_c(_GREEN, "dtensor: covered"))
 
     return " · ".join(parts)
+
+
+def _collect_untraceable_errors(node: DecompNode) -> list[tuple[str, str]]:
+    """Collect unique (op_name, error) pairs for untraceable nodes in a tree."""
+    seen: set[str] = set()
+    errors: list[tuple[str, str]] = []
+
+    def walk(n: DecompNode) -> None:
+        if not n.traceable and n.error:
+            name = op_display_name(n.op)
+            if name not in seen:
+                seen.add(name)
+                errors.append((name, n.error))
+        for c in n.children:
+            walk(c)
+
+    walk(node)
+    return errors
+
+
+def _warn_untraceable(node: DecompNode) -> None:
+    """Print a stderr warning if the tree contains untraceable ops."""
+    errors = _collect_untraceable_errors(node)
+    if not errors:
+        return
+
+    n = len(errors)
+    print(
+        f"\n{_c(_YELLOW, 'warning')}: {n} {'op' if n == 1 else 'ops'} "
+        f"could not be traced with synthetic inputs — "
+        f"{'its subtree is' if n == 1 else 'their subtrees are'} "
+        f"incomplete.",
+        file=sys.stderr,
+    )
+    for op_name, error in errors:
+        print(f"  {op_name}: {error}", file=sys.stderr)
+
+
+def _add_untraceable_warnings(d: dict, node: DecompNode) -> None:
+    """Add a warnings field to a JSON dict if the tree has untraceable ops."""
+    errors = _collect_untraceable_errors(node)
+    if errors:
+        d["warnings"] = [
+            {"op": name, "message": f"could not trace: {error}"}
+            for name, error in errors
+        ]
 
 
 def tree_to_dict(node: DecompNode) -> dict:

@@ -256,6 +256,9 @@ def _trace_decomp_uncached(op: OpOverload) -> tuple[OpOverload, ...] | str:
     6. Alternative shapes via _ALT_SHAPES — varying dimensionality (1D–5D),
        spatial sizes, and channel configurations. In this mode, "weight" args
        get the full shape (for conv ops) and optional "bias" is set to None.
+
+    Steps 2-5 modify the default args only. Step 6 creates fresh args and
+    does not re-apply steps 2-5 (retries are independent, not composed).
     """
     decomp_fn = _get_decomp_fn(op)
     if decomp_fn is None:
@@ -462,11 +465,35 @@ def _fill_optional_scalars(op: OpOverload, args: list, kwargs: dict) -> tuple[li
     return (new_args, new_kwargs) if changed else None
 
 
+def _is_optional_int_list(arg_type) -> bool:
+    """Check if a schema type is an optional list of ints."""
+    if arg_type.kind() != "OptionalType":
+        return False
+    elem = arg_type.getElementType()
+    return elem.kind() == "ListType" and elem.getElementType().kind() == "IntType"
+
+
+def _is_optional_float_list(arg_type) -> bool:
+    """Check if a schema type is an optional list of floats."""
+    if arg_type.kind() != "OptionalType":
+        return False
+    elem = arg_type.getElementType()
+    return elem.kind() == "ListType" and elem.getElementType().kind() == "FloatType"
+
+
 def _fill_optional_lists(op: OpOverload, args: list, kwargs: dict) -> tuple[list, dict] | None:
     """Fill None optional list args with reasonable defaults.
 
     Handles upsample ops that need exactly one of output_size or scale_factors.
+    Infers list length from the input tensor's spatial dimensions (ndim - 2).
     """
+    # Infer spatial dims from the first tensor arg
+    spatial_dims = 2  # fallback
+    for a in args:
+        if isinstance(a, torch.Tensor) and a.ndim >= 3:
+            spatial_dims = a.ndim - 2
+            break
+
     changed = False
     new_args = list(args)
     pos_idx = 0
@@ -474,13 +501,12 @@ def _fill_optional_lists(op: OpOverload, args: list, kwargs: dict) -> tuple[list
         if arg.kwarg_only:
             break
         if arg.type.kind() == "OptionalType":
-            elem = str(arg.type)
-            if "int[]" in elem and pos_idx < len(new_args) and new_args[pos_idx] is None:
-                new_args[pos_idx] = [4]
+            if _is_optional_int_list(arg.type) and pos_idx < len(new_args) and new_args[pos_idx] is None:
+                new_args[pos_idx] = [4] * spatial_dims
                 changed = True
                 break  # Fill only the first optional list, then stop
-            if "float[]" in elem and pos_idx < len(new_args) and new_args[pos_idx] is None:
-                new_args[pos_idx] = [2.0]
+            if _is_optional_float_list(arg.type) and pos_idx < len(new_args) and new_args[pos_idx] is None:
+                new_args[pos_idx] = [2.0] * spatial_dims
                 changed = True
                 break
         pos_idx += 1
