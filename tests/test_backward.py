@@ -1,11 +1,12 @@
 """Tests for backward (gradient) tracing."""
 
 import json
+from collections import Counter
 
 import torch
 
 from decomp_magician.__main__ import main
-from decomp_magician.tree import trace_backward
+from decomp_magician.tree import trace_backward, op_display_name
 
 
 class TestTraceBackward:
@@ -38,6 +39,14 @@ class TestTraceBackward:
         result = trace_backward(torch.ops.aten.addcmul.default)
         assert isinstance(result, tuple)
         assert len(result) >= 3  # at least mul, add, etc.
+
+    def test_duplicate_ops_preserved(self):
+        """Raw result should preserve duplicates (Counter can aggregate later)."""
+        result = trace_backward(torch.ops.aten.addcmul.default)
+        assert isinstance(result, tuple)
+        counts = Counter(op_display_name(op) for op in result)
+        # addcmul backward involves mul multiple times
+        assert any(c > 1 for c in counts.values()), f"expected duplicates: {counts}"
 
 
 class TestBackwardCli:
