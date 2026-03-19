@@ -199,9 +199,10 @@ def _get_dtensor_strategy(op: OpOverload) -> str:
     decomp_cls = dt["decomp_strategy_cls"]
 
     # Check registered strategies (DTensor has an explicit handler).
-    if op in prop.op_strategy_funcs:
+    # Attribute names vary across PyTorch versions, so guard each.
+    if hasattr(prop, "op_strategy_funcs") and op in prop.op_strategy_funcs:
         return "registered"
-    if op in prop.op_single_dim_strategy_funcs:
+    if hasattr(prop, "op_single_dim_strategy_funcs") and op in prop.op_single_dim_strategy_funcs:
         return "registered"
     if hasattr(prop, "op_to_rules") and op in prop.op_to_rules:
         return "registered"
