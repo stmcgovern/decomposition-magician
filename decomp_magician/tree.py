@@ -9,7 +9,7 @@ import torch
 from torch._ops import OpOverload
 from torch.utils._python_dispatch import TorchDispatchMode
 
-from decomp_magician.classify import OpClass, classify
+from decomp_magician.classify import DecompType, OpClass, classify
 
 
 def op_display_name(op) -> str:
@@ -26,7 +26,7 @@ class DecompNode:
     op: OpOverload
     children: tuple[DecompNode, ...] = ()
     count: int = 1
-    classification: OpClass = OpClass("leaf")
+    classification: OpClass = OpClass(DecompType.LEAF)
     traceable: bool = True
     error: str | None = None
 

@@ -21,7 +21,7 @@ from decomp_magician.opset import OPSETS, check_opset_coverage
 from decomp_magician.resolve import resolve_op
 from decomp_magician.reverse import reverse_lookup
 from decomp_magician.stats import compute_stats
-from decomp_magician.classify import DECOMP_TYPES, is_dtensor_intercept, is_dtensor_gap
+from decomp_magician.classify import DECOMP_TYPES, DtensorStrategy, is_dtensor_intercept, is_dtensor_gap
 from decomp_magician.tree import DecompNode, build_tree, collect_leaf_counts, op_display_name, trace_backward
 
 
@@ -1025,9 +1025,9 @@ def _run_model(args) -> int:
         for name, op_obj in op_objects.items():
             try:
                 cls = classify_op(op_obj, dtensor=True)
-                dtensor_info[name] = cls.dtensor_strategy or "missing"
+                dtensor_info[name] = cls.dtensor_strategy or DtensorStrategy.MISSING
             except Exception:
-                dtensor_info[name] = "missing"
+                dtensor_info[name] = DtensorStrategy.MISSING
 
     if args.json:
         json_data: dict = {

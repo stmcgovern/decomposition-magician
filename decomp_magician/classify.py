@@ -3,24 +3,41 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from enum import StrEnum
+from typing import NamedTuple
 
 import torch
 from torch._ops import OpOverload
 
 
-DECOMP_TYPES = frozenset({"CIA", "table", "both", "leaf"})
-DTENSOR_STRATEGIES = frozenset({"registered", "decomp-fallback", "missing", "not-applicable"})
+class DecompType(StrEnum):
+    CIA = "CIA"
+    TABLE = "table"
+    BOTH = "both"
+    LEAF = "leaf"
+
+
+class DtensorStrategy(StrEnum):
+    REGISTERED = "registered"
+    DECOMP_FALLBACK = "decomp-fallback"
+    MISSING = "missing"
+    NOT_APPLICABLE = "not-applicable"
+
+
+# Keep for backward compatibility with any external code checking membership
+DECOMP_TYPES = frozenset(DecompType)
+DTENSOR_STRATEGIES = frozenset(DtensorStrategy)
 
 
 @dataclass(frozen=True)
 class OpClass:
-    decomp_type: str  # "CIA", "table", "both", "leaf"
+    decomp_type: DecompType
     has_backend: dict[str, bool] = field(default_factory=dict)
     tags: tuple[str, ...] = ()
     is_mutable: bool = False
     has_alias_info: bool = False
     inductor_kept: bool = False
-    dtensor_strategy: str | None = None  # "registered", "decomp-fallback", "missing", "not-applicable"
+    dtensor_strategy: DtensorStrategy | None = None
     autograd_type: str | None = None  # "autograd_kernel", "math_kernel", etc.
     has_adiov: bool | None = None  # non-fallthrough ADInplaceOrView kernel
 
@@ -37,23 +54,23 @@ class OpClass:
             )
 
 
-def is_dtensor_intercept(strategy: str | None) -> bool:
+def is_dtensor_intercept(strategy: DtensorStrategy | None) -> bool:
     """Whether this DTensor strategy intercepts dispatch (children unreachable).
 
     Only 'registered' strategies intercept — 'decomp-fallback' traces through
     the decomposition, so children ARE reached and need their own strategies.
     """
-    return strategy == "registered"
+    return strategy == DtensorStrategy.REGISTERED
 
 
-def is_dtensor_gap(strategy: str | None) -> bool:
+def is_dtensor_gap(strategy: DtensorStrategy | None) -> bool:
     """Whether this DTensor strategy represents a real coverage gap.
 
     Only 'missing' is a gap — the op has tensor inputs (so DTensor dispatch
     can reach it) but no strategy to handle it.  'not-applicable' and
     'decomp-fallback' are not gaps; 'registered' is actively covered.
     """
-    return strategy == "missing"
+    return strategy == DtensorStrategy.MISSING
 
 
 # Backend dispatch keys to check
@@ -99,18 +116,18 @@ def _build_inductor_kept() -> set[str]:
     return result
 
 
-def _get_decomp_type(op: OpOverload) -> str:
+def _get_decomp_type(op: OpOverload) -> DecompType:
     from torch._decomp import decomposition_table
 
     in_table = op in decomposition_table
     has_cia = op._can_decompose()
     if in_table and has_cia:
-        return "both"
+        return DecompType.BOTH
     if in_table:
-        return "table"
+        return DecompType.TABLE
     if has_cia:
-        return "CIA"
-    return "leaf"
+        return DecompType.CIA
+    return DecompType.LEAF
 
 
 def _get_backends(op: OpOverload) -> dict[str, bool]:
@@ -126,10 +143,15 @@ def _get_tags(op: OpOverload) -> tuple[str, ...]:
     return tuple(str(t).split(".")[-1] for t in op.tags)
 
 
-_dtensor_init: dict | None = None
+class _DtensorState(NamedTuple):
+    propagator: object  # ShardingPropagator instance
+    decomp_strategy_cls: type | None  # DecompShardingStrategy class, if available
 
 
-def _init_dtensor():
+_dtensor_state: _DtensorState | None = None
+
+
+def _init_dtensor() -> _DtensorState:
     """Eagerly initialize DTensor propagator and decomposition strategy.
 
     Both are resolved here so that a single import-order dependency
@@ -140,9 +162,9 @@ def _init_dtensor():
     import sys
     import warnings
 
-    global _dtensor_init
-    if _dtensor_init is not None:
-        return _dtensor_init
+    global _dtensor_state
+    if _dtensor_state is not None:
+        return _dtensor_state
 
     propagator = None
     decomp_strategy_cls = None
@@ -173,8 +195,8 @@ def _init_dtensor():
                 stacklevel=2,
             )
 
-    _dtensor_init = {"propagator": propagator, "decomp_strategy_cls": decomp_strategy_cls}
-    return _dtensor_init
+    _dtensor_state = _DtensorState(propagator, decomp_strategy_cls)
+    return _dtensor_state
 
 
 def _type_involves_tensor(t) -> bool:
@@ -192,37 +214,37 @@ def _has_tensor_input(op: OpOverload) -> bool:
     return any(_type_involves_tensor(arg.type) for arg in op._schema.arguments)
 
 
-def _get_dtensor_strategy(op: OpOverload) -> str:
+def _get_dtensor_strategy(op: OpOverload) -> DtensorStrategy:
     """Check DTensor sharding strategy registration status."""
     dt = _init_dtensor()
-    prop = dt["propagator"]
-    decomp_cls = dt["decomp_strategy_cls"]
+    prop = dt.propagator
+    decomp_cls = dt.decomp_strategy_cls
 
     # Check registered strategies (DTensor has an explicit handler).
     # Attribute names vary across PyTorch versions, so guard each.
     if hasattr(prop, "op_strategy_funcs") and op in prop.op_strategy_funcs:
-        return "registered"
+        return DtensorStrategy.REGISTERED
     if hasattr(prop, "op_single_dim_strategy_funcs") and op in prop.op_single_dim_strategy_funcs:
-        return "registered"
+        return DtensorStrategy.REGISTERED
     if hasattr(prop, "op_to_rules") and op in prop.op_to_rules:
-        return "registered"
+        return DtensorStrategy.REGISTERED
 
     # Check DTensor's own decomposition awareness.
     if decomp_cls is not None and decomp_cls.has_decomp(op):
-        return "decomp-fallback"
+        return DtensorStrategy.DECOMP_FALLBACK
 
     # CIA ops auto-decompose before DTensor dispatch, so DTensor
     # handles the children via fallback — same as table decomps.
     # This check is independent of DTensor imports.
     if op._can_decompose():
-        return "decomp-fallback"
+        return DtensorStrategy.DECOMP_FALLBACK
 
     # Factory/allocation ops have no tensor inputs, so DTensor dispatch
     # (which is input-driven via overloaded_args) can never reach them.
     if not _has_tensor_input(op):
-        return "not-applicable"
+        return DtensorStrategy.NOT_APPLICABLE
 
-    return "missing"
+    return DtensorStrategy.MISSING
 
 
 def classify(op: OpOverload, dtensor: bool = False, dispatch: bool = False) -> OpClass:
