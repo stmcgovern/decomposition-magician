@@ -6,7 +6,7 @@ import warnings
 from collections import Counter
 from dataclasses import dataclass
 
-from decomp_magician.classify import classify, is_dtensor_intercept
+from decomp_magician.classify import classify, is_dtensor_intercept, is_dtensor_gap
 from decomp_magician.reverse import _is_out_variant
 from decomp_magician.tree import DecompNode, build_tree, op_display_name
 
@@ -17,6 +17,7 @@ class DtensorStats:
     registered: int  # ops with a direct DTensor strategy
     decomp_fallback: int  # ops handled via decomposition tracing
     missing: int  # ops with no DTensor strategy at all
+    not_applicable: int  # ops with no tensor inputs (unreachable by DTensor dispatch)
     fully_covered: int  # traceable ops where all leaf paths hit a registered ancestor
     has_gaps: int  # traceable ops with at least one uncovered leaf path
     top_uncovered: list[tuple[str, int]]  # most common uncovered leaf ops
@@ -31,7 +32,7 @@ class StatsResult:
     2. sum(by_type.values()) == total_non_out - classify_errors
     3. len(untraceable_ops) == untraceable
     4. dtensor.registered + dtensor.decomp_fallback + dtensor.missing
-       == total_non_out - classify_errors  (when dtensor is not None)
+       + dtensor.not_applicable == total_non_out - classify_errors  (when dtensor is not None)
     """
     total: int
     total_non_out: int
@@ -71,12 +72,13 @@ class StatsResult:
             )
         if self.dtensor is not None:
             dt = self.dtensor
-            dt_sum = dt.registered + dt.decomp_fallback + dt.missing
+            dt_sum = dt.registered + dt.decomp_fallback + dt.missing + dt.not_applicable
             if dt_sum != classified:
                 raise ValueError(
                     f"DTensor partition invariant violated: "
                     f"registered({dt.registered}) + decomp_fallback({dt.decomp_fallback}) "
-                    f"+ missing({dt.missing}) = {dt_sum} != {classified}"
+                    f"+ missing({dt.missing}) + not_applicable({dt.not_applicable}) "
+                    f"= {dt_sum} != {classified}"
                 )
 
 
@@ -99,6 +101,7 @@ def compute_stats(compile: bool = False, dtensor: bool = False) -> StatsResult:
     dt_registered = 0
     dt_decomp_fallback = 0
     dt_missing = 0
+    dt_not_applicable = 0
     dt_fully_covered = 0
     dt_has_gaps = 0
     dt_uncovered_leaves: Counter[str] = Counter()
@@ -127,6 +130,8 @@ def compute_stats(compile: bool = False, dtensor: bool = False) -> StatsResult:
                 dt_decomp_fallback += 1
             elif cls.dtensor_strategy == "missing":
                 dt_missing += 1
+            elif cls.dtensor_strategy == "not-applicable":
+                dt_not_applicable += 1
 
         try:
             with warnings.catch_warnings():
@@ -164,6 +169,7 @@ def compute_stats(compile: bool = False, dtensor: bool = False) -> StatsResult:
             registered=dt_registered,
             decomp_fallback=dt_decomp_fallback,
             missing=dt_missing,
+            not_applicable=dt_not_applicable,
             fully_covered=dt_fully_covered,
             has_gaps=dt_has_gaps,
             top_uncovered=dt_uncovered_leaves.most_common(15),
@@ -208,7 +214,7 @@ def _collect_uncovered_dtensor(node: DecompNode) -> set[str]:
             n.classification.dtensor_strategy
         )
         if not n.children:
-            if n.classification.dtensor_strategy == "missing" and not covered:
+            if is_dtensor_gap(n.classification.dtensor_strategy) and not covered:
                 uncovered.add(op_display_name(n.op))
             return
         for c in n.children:
