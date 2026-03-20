@@ -640,7 +640,7 @@ def build_tree(
     cls = classify(op)
 
     # Leaf or depth exhausted — no children
-    if cls.decomp_type == "leaf" or depth == 0:
+    if cls.decomp_type == DecompType.LEAF or depth == 0:
         return DecompNode(op=op, classification=cls)
 
     # In compile mode, inductor-kept ops are treated as leaves

@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 import re
 import sys
+from types import MappingProxyType
 
 if sys.version_info >= (3, 11):
     from enum import StrEnum
@@ -378,7 +379,7 @@ def classify(op: OpOverload) -> OpClass:
 
     result = OpClass(
         decomp_type=_get_decomp_type(op),
-        has_backend=_get_backends(op),
+        has_backend=MappingProxyType(_get_backends(op)),
         tags=_get_tags(op),
         is_mutable=op._schema.is_mutable,
         has_alias_info=any(

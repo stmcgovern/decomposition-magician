@@ -208,7 +208,7 @@ def tree_to_dict(node: DecompNode) -> dict:
         "decomp_type": cls.decomp_type,
         "count": node.count,
         "inductor_kept": cls.inductor_kept,
-        "backends": cls.has_backend,
+        "backends": dict(cls.has_backend),
         "tags": cls.tags,
         "mutable": cls.is_mutable,
         "alias_info": cls.has_alias_info,
