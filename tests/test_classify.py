@@ -138,7 +138,7 @@ class TestDtensorStrategy:
         """A true leaf op (no decomposition) should be 'missing' or 'registered'."""
         op = torch.ops.aten.mm.default
         cls = classify(op, dtensor=True)
-        assert cls.dtensor_strategy in ("registered", "missing")
+        assert cls.dtensor_strategy in ("registered", "missing", "not-applicable")
 
     def test_cia_op_never_missing(self):
         """Any op with _can_decompose()=True must not be 'missing'.
@@ -190,6 +190,6 @@ class TestOpClassValidation:
             assert cls.decomp_type == dt
 
     def test_valid_dtensor_strategies(self):
-        for ds in ("registered", "decomp-fallback", "missing", None):
+        for ds in ("registered", "decomp-fallback", "missing", "not-applicable", None):
             cls = OpClass(decomp_type="leaf", dtensor_strategy=ds)
             assert cls.dtensor_strategy == ds

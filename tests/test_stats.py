@@ -105,7 +105,7 @@ class TestStatsResultInvariants:
                 traceable=50, untraceable=0, classify_errors=0,
                 leaf_ops=Counter(), deepest=[],
                 dtensor=DtensorStats(
-                    registered=10, decomp_fallback=10, missing=10,  # 30 != 50
+                    registered=10, decomp_fallback=10, missing=10, not_applicable=0,  # 30 != 50
                     fully_covered=0, has_gaps=0, top_uncovered=[],
                 ),
             )

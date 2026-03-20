@@ -21,7 +21,7 @@ from decomp_magician.opset import OPSETS, check_opset_coverage
 from decomp_magician.resolve import resolve_op
 from decomp_magician.reverse import reverse_lookup
 from decomp_magician.stats import compute_stats
-from decomp_magician.classify import DECOMP_TYPES, is_dtensor_intercept
+from decomp_magician.classify import DECOMP_TYPES, DtensorStrategy, is_dtensor_intercept, is_dtensor_gap
 from decomp_magician.tree import DecompNode, build_tree, collect_leaf_counts, op_display_name, trace_backward
 
 
@@ -146,6 +146,8 @@ def _format_annotation(node: DecompNode, ancestor_has_dtensor: bool = False) -> 
             annotation += "  " + _c(_GREEN, "dtensor: ok")
         elif cls.dtensor_strategy == "decomp-fallback":
             annotation += "  " + _c(_GREEN, "dtensor: ok (via decomp)")
+        elif cls.dtensor_strategy == "not-applicable":
+            annotation += "  " + _c(_DIM, "dtensor: n/a")
         elif cls.dtensor_strategy == "missing" and ancestor_has_dtensor:
             annotation += "  " + _c(_DIM, "dtensor: ok (via ancestor)")
         elif cls.dtensor_strategy == "missing":
@@ -680,6 +682,7 @@ def _run_stats(args) -> int:
                 "registered": dt.registered,
                 "decomp_fallback": dt.decomp_fallback,
                 "missing": dt.missing,
+                "not_applicable": dt.not_applicable,
                 "fully_covered": dt.fully_covered,
                 "has_gaps": dt.has_gaps,
                 "top_uncovered": [
@@ -776,6 +779,8 @@ def _run_stats(args) -> int:
         lines.append(f"  Registered strategy:   {_c(_GREEN, str(dt.registered))} ({reg_pct:.0f}%)")
         lines.append(f"  Decomp fallback:       {dt.decomp_fallback}")
         lines.append(f"  No strategy:           {_c(_RED, str(dt.missing))}")
+        if dt.not_applicable > 0:
+            lines.append(f"  No tensor inputs:      {_c(_DIM, str(dt.not_applicable))}")
         lines.append("")
 
         traceable_with_children = dt.fully_covered + dt.has_gaps
@@ -1020,9 +1025,9 @@ def _run_model(args) -> int:
         for name, op_obj in op_objects.items():
             try:
                 cls = classify_op(op_obj, dtensor=True)
-                dtensor_info[name] = cls.dtensor_strategy or "missing"
+                dtensor_info[name] = cls.dtensor_strategy or DtensorStrategy.MISSING
             except Exception:
-                dtensor_info[name] = "missing"
+                dtensor_info[name] = DtensorStrategy.MISSING
 
     if args.json:
         json_data: dict = {
@@ -1040,9 +1045,9 @@ def _run_model(args) -> int:
             json_data["opset"] = args.target_opset
             json_data["decomposed"] = True
         if dtensor_info:
-            missing = [n for n, s in dtensor_info.items() if s == "missing"]
-            json_data["dtensor_covered"] = len(missing) == 0
-            json_data["dtensor_missing_ops"] = sorted(missing)
+            gaps = [n for n, s in dtensor_info.items() if is_dtensor_gap(s)]
+            json_data["dtensor_covered"] = len(gaps) == 0
+            json_data["dtensor_missing_ops"] = sorted(gaps)
         print(json.dumps(json_data, indent=2))
         return 0
 
@@ -1057,7 +1062,7 @@ def _run_model(args) -> int:
 
     # DTensor summary at top if requested
     if dtensor_info:
-        missing = [n for n, s in dtensor_info.items() if s == "missing"]
+        missing = [n for n, s in dtensor_info.items() if is_dtensor_gap(s)]
         if missing:
             lines.append(f"  DTensor:             {_c(_RED, f'{len(missing)} ops missing strategies')}")
         else:
@@ -1107,6 +1112,8 @@ def _format_model_dtensor_tag(dtensor_info: dict[str, str], name: str) -> str:
         return "  " + _c(_GREEN, "dtensor: ok")
     if strategy == "decomp-fallback":
         return "  " + _c(_GREEN, "dtensor: ok (via decomp)")
+    if strategy == "not-applicable":
+        return "  " + _c(_DIM, "dtensor: n/a")
     return "  " + _c(_RED, "dtensor: MISSING")
 
 
@@ -1139,7 +1146,7 @@ def _collect_leaf_frontier(node: DecompNode) -> LeafFrontier:
                 inductor_kept_ops.add(name)
             if not n.traceable:
                 untraceable_ops.add(name)
-            if n.classification.dtensor_strategy == "missing" and not covered:
+            if is_dtensor_gap(n.classification.dtensor_strategy) and not covered:
                 dtensor_uncovered_ops.add(name)
             return
         for c in n.children:
@@ -1254,7 +1261,7 @@ def format_summary(node: DecompNode) -> str:
         counts[dt] = counts.get(dt, 0) + 1
         if n.classification.inductor_kept:
             inductor_kept += 1
-        if n.classification.dtensor_strategy == "missing" and not ancestor_covered:
+        if is_dtensor_gap(n.classification.dtensor_strategy) and not ancestor_covered:
             dtensor_missing += 1
         if not n.traceable:
             untraceable_nodes += 1
