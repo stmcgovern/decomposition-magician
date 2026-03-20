@@ -79,10 +79,12 @@ def reverse_lookup(
 
         all_ops, target_depth = _search_tree(node, target)
         if target in all_ops:
+            # target in all_ops guarantees _search_tree found it at depth > 0
+            assert target_depth is not None
             results.append(ReverseEntry(
                 op=name,
                 count=all_ops[target],
-                target_depth=target_depth or 0,
+                target_depth=target_depth,
             ))
 
     results.sort(key=lambda r: r.count, reverse=True)

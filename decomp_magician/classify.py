@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 import re
 import sys
@@ -60,7 +61,7 @@ OP_CATEGORIES = frozenset(OpCategory)
 @dataclass(frozen=True)
 class OpClass:
     decomp_type: DecompType
-    has_backend: dict[str, bool] = field(default_factory=dict)
+    has_backend: Mapping[str, bool] = field(default_factory=dict)
     tags: tuple[str, ...] = ()
     is_mutable: bool = False
     has_alias_info: bool = False
@@ -78,6 +79,13 @@ class OpClass:
             raise ValueError(
                 f"Invalid dtensor_strategy {self.dtensor_strategy!r}, "
                 f"expected one of {sorted(DTENSOR_STRATEGIES)}"
+            )
+        if self.inductor_kept and self.decomp_type not in (
+            DecompType.TABLE, DecompType.BOTH,
+        ):
+            raise ValueError(
+                f"inductor_kept requires decomp_type TABLE or BOTH, "
+                f"got {self.decomp_type!r}"
             )
 
 
@@ -143,11 +151,7 @@ def _build_inductor_kept() -> set[str]:
     return result
 
 
-def _get_decomp_type(op: OpOverload) -> DecompType:
-    from torch._decomp import decomposition_table
-
-    in_table = op in decomposition_table
-    has_cia = op._can_decompose()
+def _get_decomp_type(in_table: bool, has_cia: bool) -> DecompType:
     if in_table and has_cia:
         return DecompType.BOTH
     if in_table:
@@ -287,7 +291,7 @@ def _is_view_op(op: OpOverload) -> bool:
     )
 
 
-def _get_op_category(op: OpOverload) -> OpCategory:
+def _get_op_category(op: OpOverload, has_tensor_input: bool) -> OpCategory:
     """Classify an op's computational pattern.
 
     Detection priority:
@@ -300,6 +304,10 @@ def _get_op_category(op: OpOverload) -> OpCategory:
     Note: categories mix computational shape (pointwise, reduction, view, factory)
     with ML domain (loss, norm, spatial). This is intentional — the classification
     serves human comprehension, not a formal type system.
+
+    Args:
+        has_tensor_input: Whether the op has any tensor arguments.
+            Pre-computed by the caller — shared with _get_dtensor_strategy.
     """
     tags = op.tags
 
@@ -314,7 +322,7 @@ def _get_op_category(op: OpOverload) -> OpCategory:
     # 2. Schema analysis — structural
     if _is_view_op(op):
         return OpCategory.VIEW
-    if not _has_tensor_input(op):
+    if not has_tensor_input:
         return OpCategory.FACTORY
     if torch.Tag.nondeterministic_seeded in tags:
         return OpCategory.RANDOM
@@ -330,8 +338,18 @@ def _get_op_category(op: OpOverload) -> OpCategory:
     return OpCategory.OTHER
 
 
-def _get_dtensor_strategy(op: OpOverload) -> DtensorStrategy:
-    """Check DTensor sharding strategy registration status."""
+def _get_dtensor_strategy(
+    op: OpOverload, has_decomp: bool, has_tensor_input: bool,
+) -> DtensorStrategy:
+    """Check DTensor sharding strategy registration status.
+
+    Args:
+        has_decomp: Whether the op has any decomposition (table or CIA).
+        has_tensor_input: Whether the op has any tensor arguments.
+        Both are pre-computed by classify() to avoid redundant work and
+        to make the shared dependency between OpCategory and DtensorStrategy
+        explicit.
+    """
     dt = _init_dtensor()
     prop = dt.propagator
     decomp_cls = dt.decomp_strategy_cls
@@ -349,15 +367,14 @@ def _get_dtensor_strategy(op: OpOverload) -> DtensorStrategy:
     if decomp_cls is not None and decomp_cls.has_decomp(op):
         return DtensorStrategy.DECOMP_FALLBACK
 
-    # CIA ops auto-decompose before DTensor dispatch, so DTensor
-    # handles the children via fallback — same as table decomps.
-    # This check is independent of DTensor imports.
-    if op._can_decompose():
+    # Ops with any decomposition (table or CIA) auto-decompose before
+    # DTensor dispatch, so DTensor handles the children via fallback.
+    if has_decomp:
         return DtensorStrategy.DECOMP_FALLBACK
 
     # Factory/allocation ops have no tensor inputs, so DTensor dispatch
     # (which is input-driven via overloaded_args) can never reach them.
-    if not _has_tensor_input(op):
+    if not has_tensor_input:
         return DtensorStrategy.NOT_APPLICABLE
 
     return DtensorStrategy.MISSING
@@ -377,8 +394,16 @@ def classify(op: OpOverload) -> OpClass:
     if cached is not None:
         return cached
 
+    # Compute shared predicates once — these determine multiple classification axes.
+    # has_decomp: shared by DecompType and DtensorStrategy
+    # has_tensor_input: shared by OpCategory (FACTORY) and DtensorStrategy (NOT_APPLICABLE)
+    from torch._decomp import decomposition_table
+    in_table = op in decomposition_table
+    has_cia = op._can_decompose()
+    has_tensor_input = _has_tensor_input(op)
+
     result = OpClass(
-        decomp_type=_get_decomp_type(op),
+        decomp_type=_get_decomp_type(in_table, has_cia),
         has_backend=MappingProxyType(_get_backends(op)),
         tags=_get_tags(op),
         is_mutable=op._schema.is_mutable,
@@ -386,8 +411,10 @@ def classify(op: OpOverload) -> OpClass:
             arg.alias_info is not None for arg in op._schema.arguments
         ),
         inductor_kept=op.name() in _build_inductor_kept(),
-        op_category=_get_op_category(op),
-        dtensor_strategy=_get_dtensor_strategy(op),
+        op_category=_get_op_category(op, has_tensor_input=has_tensor_input),
+        dtensor_strategy=_get_dtensor_strategy(
+            op, has_decomp=in_table or has_cia, has_tensor_input=has_tensor_input,
+        ),
     )
     _classify_cache[op] = result
     return result

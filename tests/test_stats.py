@@ -94,7 +94,7 @@ class TestStatsResultInvariants:
                 total=100, total_non_out=50, by_type={"table": 50}, inductor_kept=0,
                 traceable=40, untraceable=10, classify_errors=0,
                 leaf_ops=Counter(), deepest=[],
-                untraceable_ops=[("aten.foo.default", "error")] * 5,  # 5 != 10
+                untraceable_ops=(("aten.foo.default", "error"),) * 5,  # 5 != 10
             )
 
     def test_dtensor_partition_invariant_rejects_bad_data(self):

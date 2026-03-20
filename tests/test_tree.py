@@ -32,6 +32,12 @@ class TestDecompNodeInvariants:
         assert node.error == "test error"
         assert node.children == ()
 
+    def test_untraceable_without_error_raises(self):
+        """Untraceable node must explain why (traceable ↔ error is None)."""
+        op = torch.ops.aten.mul.Tensor
+        with pytest.raises(ValueError, match="Untraceable node must have an error reason"):
+            DecompNode(op=op, traceable=False)
+
     def test_count_zero_raises(self):
         """count must be >= 1."""
         op = torch.ops.aten.mul.Tensor

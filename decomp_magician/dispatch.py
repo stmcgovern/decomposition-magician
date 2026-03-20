@@ -48,14 +48,30 @@ class DispatchEntry:
 
 @dataclass(frozen=True)
 class DispatchInfo:
-    """Dispatch table analysis for a single op."""
+    """Dispatch table analysis for a single op.
+
+    Source fields: op_name, autograd_entry, adiov_entry, dense_entry.
+    Derived properties: autograd_type, has_adiov, mode_sensitive.
+    Properties are computed from source fields — no redundant state to go stale.
+    """
     op_name: str
     autograd_entry: DispatchEntry | None  # AutogradCPU entry
     adiov_entry: DispatchEntry | None  # ADInplaceOrView entry
     dense_entry: DispatchEntry | None  # Dense/CPU entry
-    autograd_type: AutogradType
-    has_adiov: bool  # non-fallthrough ADIOV kernel
-    mode_sensitive: bool  # has non-fallthrough autograd entry (any type)
+
+    @property
+    def autograd_type(self) -> AutogradType:
+        return _classify_autograd_type(self.autograd_entry)
+
+    @property
+    def has_adiov(self) -> bool:
+        """Non-fallthrough ADInplaceOrView kernel."""
+        return self.adiov_entry is not None and not self.adiov_entry.is_fallthrough
+
+    @property
+    def mode_sensitive(self) -> bool:
+        """Has non-fallthrough autograd entry (any type)."""
+        return self.autograd_type not in (AutogradType.NONE, AutogradType.FALLTHROUGH)
 
     @property
     def differs_under_inference_mode(self) -> bool:
@@ -66,9 +82,6 @@ class DispatchInfo:
 _AUTOGRAD_KEY = "AutogradCPU"
 _ADIOV_KEY = "ADInplaceOrView"
 _DENSE_KEY = "CPU"
-
-# Keys to extract from dispatch tables
-_KEYS_OF_INTEREST = [_AUTOGRAD_KEY, _ADIOV_KEY, _DENSE_KEY]
 
 
 def _parse_dispatch_table(op_name: str) -> dict[str, DispatchEntry]:
@@ -114,22 +127,11 @@ def _build_dispatch_info(op_name: str) -> DispatchInfo:
     """Build dispatch info from an op name string."""
     entries = _parse_dispatch_table(op_name)
 
-    ag = entries.get(_AUTOGRAD_KEY)
-    adiov = entries.get(_ADIOV_KEY)
-    dense = entries.get(_DENSE_KEY)
-
-    ag_type = _classify_autograd_type(ag)
-    has_adiov = adiov is not None and not adiov.is_fallthrough
-    mode_sensitive = ag_type not in (AutogradType.NONE, AutogradType.FALLTHROUGH)
-
     return DispatchInfo(
         op_name=op_name,
-        autograd_entry=ag,
-        adiov_entry=adiov,
-        dense_entry=dense,
-        autograd_type=ag_type,
-        has_adiov=has_adiov,
-        mode_sensitive=mode_sensitive,
+        autograd_entry=entries.get(_AUTOGRAD_KEY),
+        adiov_entry=entries.get(_ADIOV_KEY),
+        dense_entry=entries.get(_DENSE_KEY),
     )
 
 

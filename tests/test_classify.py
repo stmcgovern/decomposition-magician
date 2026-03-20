@@ -200,6 +200,16 @@ class TestOpClassValidation:
             cls = OpClass(decomp_type="leaf", dtensor_strategy=ds)
             assert cls.dtensor_strategy == ds
 
+    def test_inductor_kept_requires_table_decomp(self):
+        """inductor_kept only makes sense for ops in the decomposition table."""
+        with pytest.raises(ValueError, match="inductor_kept requires"):
+            OpClass(decomp_type="leaf", inductor_kept=True)
+        with pytest.raises(ValueError, match="inductor_kept requires"):
+            OpClass(decomp_type="CIA", inductor_kept=True)
+        # Valid: table and both
+        OpClass(decomp_type="table", inductor_kept=True)
+        OpClass(decomp_type="both", inductor_kept=True)
+
 
 class TestOpCategory:
     def test_pointwise_from_tag(self):

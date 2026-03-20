@@ -41,6 +41,8 @@ class DecompNode:
             raise ValueError("Untraceable node cannot have children")
         if self.error is not None and self.traceable:
             raise ValueError("Node with error must be untraceable")
+        if not self.traceable and self.error is None:
+            raise ValueError("Untraceable node must have an error reason")
 
 
 def collect_leaf_counts(node: DecompNode) -> Counter[str]:
@@ -716,7 +718,7 @@ def collect_untraceable_errors(node: DecompNode) -> list[tuple[str, str]]:
     errors: list[tuple[str, str]] = []
 
     def walk(n: DecompNode) -> None:
-        if not n.traceable and n.error:
+        if not n.traceable:
             name = op_display_name(n.op)
             if name not in seen:
                 seen.add(name)
@@ -730,13 +732,19 @@ def collect_untraceable_errors(node: DecompNode) -> list[tuple[str, str]]:
 
 @dataclass(frozen=True)
 class PurityResult:
-    """Purity analysis of a decomposition tree."""
+    """Purity analysis of a decomposition tree.
+
+    is_pure is derived — no mutable or ADIOV leaves means pure.
+    """
     op: str
-    is_pure: bool
     total_leaves: int
     mutable_leaves: tuple[tuple[str, int], ...]
     adiov_leaves: tuple[tuple[str, int], ...]
     mode_sensitive_leaves: tuple[tuple[str, int], ...]
+
+    @property
+    def is_pure(self) -> bool:
+        return len(self.mutable_leaves) == 0 and len(self.adiov_leaves) == 0
 
 
 def analyze_purity(node: DecompNode) -> PurityResult:
@@ -770,7 +778,6 @@ def analyze_purity(node: DecompNode) -> PurityResult:
 
     return PurityResult(
         op=op_display_name(node.op),
-        is_pure=len(mutable) == 0 and len(adiov) == 0,
         total_leaves=len(counts),
         mutable_leaves=tuple(mutable),
         adiov_leaves=tuple(adiov),

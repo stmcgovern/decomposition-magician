@@ -7,7 +7,8 @@ from collections import Counter
 from dataclasses import dataclass
 
 from decomp_magician.classify import (
-    classify, get_all_decomposable_ops, is_dtensor_gap, is_dtensor_intercept, is_out_variant,
+    DtensorStrategy, classify, get_all_decomposable_ops,
+    is_dtensor_gap, is_dtensor_intercept, is_out_variant,
 )
 from decomp_magician.tree import DecompNode, build_tree, op_display_name
 
@@ -44,7 +45,7 @@ class StatsResult:
     classify_errors: int
     leaf_ops: Counter[str]
     deepest: list[tuple[str, int]]
-    untraceable_ops: list[tuple[str, str]] = ()  # (op_name, error_reason)
+    untraceable_ops: tuple[tuple[str, str], ...] = ()
     dtensor: DtensorStats | None = None
 
     def __post_init__(self):
@@ -142,7 +143,7 @@ def compute_stats(
 
         if not node.traceable:
             untraceable += 1
-            untraceable_list.append((name, node.error or "unknown"))
+            untraceable_list.append((name, node.error))
         else:
             traceable += 1
             if node.children:
@@ -164,10 +165,10 @@ def compute_stats(
     dtensor_stats = None
     if dtensor:
         dtensor_stats = DtensorStats(
-            registered=dt_by_strategy["registered"],
-            decomp_fallback=dt_by_strategy["decomp-fallback"],
-            missing=dt_by_strategy["missing"],
-            not_applicable=dt_by_strategy["not-applicable"],
+            registered=dt_by_strategy[DtensorStrategy.REGISTERED],
+            decomp_fallback=dt_by_strategy[DtensorStrategy.DECOMP_FALLBACK],
+            missing=dt_by_strategy[DtensorStrategy.MISSING],
+            not_applicable=dt_by_strategy[DtensorStrategy.NOT_APPLICABLE],
             fully_covered=dt_fully_covered,
             has_gaps=dt_has_gaps,
             top_uncovered=dt_uncovered_leaves.most_common(15),
@@ -183,7 +184,7 @@ def compute_stats(
         classify_errors=classify_errors,
         leaf_ops=leaf_ops,
         deepest=depths[:10],
-        untraceable_ops=untraceable_list,
+        untraceable_ops=tuple(untraceable_list),
         dtensor=dtensor_stats,
     )
 

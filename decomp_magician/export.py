@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from decomp_magician.classify import DecompType
 from decomp_magician.dispatch import DispatchInfo, get_dispatch_info_cached
 from decomp_magician.tree import (
     DecompNode,
@@ -227,7 +228,7 @@ def leaves_to_dict(node: DecompNode) -> dict:
     root_name = op_display_name(node.op)
 
     if not node.children:
-        return {"op": root_name, "decomp_type": "leaf", "leaves": []}
+        return {"op": root_name, "decomp_type": DecompType.LEAF, "leaves": []}
 
     lf = collect_leaf_frontier(node)
 

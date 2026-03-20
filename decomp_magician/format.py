@@ -338,7 +338,7 @@ def format_stats(
     ]
 
     type_parts = []
-    for dt in ("table", "both", "CIA", "leaf"):
+    for dt in (DecompType.TABLE, DecompType.BOTH, DecompType.CIA, DecompType.LEAF):
         if data.by_type.get(dt, 0) > 0:
             type_parts.append(f"{data.by_type[dt]} {dt}")
     lines.append(f"  By type:             {', '.join(type_parts)}")
@@ -402,8 +402,8 @@ def format_stats(
 
     if data.dtensor:
         dt = data.dtensor
-        total_classified = dt.registered + dt.decomp_fallback + dt.missing
-        reg_pct = dt.registered / total_classified * 100 if total_classified else 0
+        tensor_bearing = dt.registered + dt.decomp_fallback + dt.missing
+        reg_pct = dt.registered / tensor_bearing * 100 if tensor_bearing else 0
 
         lines.append("")
         lines.append(_c(cfg, _BOLD, "DTensor coverage") + ":")
