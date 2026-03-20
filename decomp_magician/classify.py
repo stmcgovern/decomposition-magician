@@ -391,3 +391,16 @@ def classify(op: OpOverload) -> OpClass:
     )
     _classify_cache[op] = result
     return result
+
+
+def is_out_variant(name: str) -> bool:
+    """Check if an op name is an _out variant."""
+    overload = name.rsplit(".", 1)[-1] if "." in name else ""
+    return overload == "out" or overload.endswith("_out")
+
+
+def get_all_decomposable_ops() -> list[OpOverload]:
+    """Get all ops from the decomposition table."""
+    from torch._decomp import decomposition_table
+
+    return list(decomposition_table.keys())

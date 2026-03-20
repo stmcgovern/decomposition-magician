@@ -6,8 +6,9 @@ import warnings
 from collections import Counter
 from dataclasses import dataclass
 
-from decomp_magician.classify import classify, is_dtensor_intercept, is_dtensor_gap
-from decomp_magician.reverse import is_out_variant
+from decomp_magician.classify import (
+    classify, get_all_decomposable_ops, is_dtensor_gap, is_dtensor_intercept, is_out_variant,
+)
 from decomp_magician.tree import DecompNode, build_tree, op_display_name
 
 
@@ -93,9 +94,7 @@ def compute_stats(
                  Classification always includes DTensor strategy (it's intrinsic);
                  this flag controls whether to aggregate and report it.
     """
-    from torch._decomp import decomposition_table
-
-    all_ops = list(decomposition_table.keys())
+    all_ops = get_all_decomposable_ops()
     by_type: Counter[str] = Counter()
     inductor_kept = 0
     traceable = 0

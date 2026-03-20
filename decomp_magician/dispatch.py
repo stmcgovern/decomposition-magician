@@ -150,9 +150,12 @@ _dispatch_cache: dict[str, DispatchInfo] = {}
 def get_dispatch_info_cached(op: OpOverload) -> DispatchInfo:
     """Cached version of get_dispatch_info for tree walks."""
     name = op.name()
-    if name not in _dispatch_cache:
-        _dispatch_cache[name] = get_dispatch_info(op)
-    return _dispatch_cache[name]
+    cached = _dispatch_cache.get(name)
+    if cached is not None:
+        return cached
+    result = get_dispatch_info(op)
+    _dispatch_cache[name] = result
+    return result
 
 
 def format_dispatch_short(info: DispatchInfo) -> str:

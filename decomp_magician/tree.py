@@ -22,12 +22,15 @@ def op_display_name(op) -> str:
     return dotted
 
 
+_LEAF_CLASS = OpClass(DecompType.LEAF)
+
+
 @dataclass(frozen=True)
 class DecompNode:
     op: OpOverload
     children: tuple[DecompNode, ...] = ()
     count: int = 1
-    classification: OpClass = OpClass(DecompType.LEAF)
+    classification: OpClass = _LEAF_CLASS
     traceable: bool = True
     error: str | None = None
 
