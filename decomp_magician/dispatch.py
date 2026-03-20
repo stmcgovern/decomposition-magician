@@ -7,10 +7,27 @@ autograd-level behavior and ADInplaceOrView kernel presence.
 from __future__ import annotations
 
 import re
+import sys
 from dataclasses import dataclass
+
+if sys.version_info >= (3, 11):
+    from enum import StrEnum
+else:
+    from enum import Enum
+
+    class StrEnum(str, Enum):
+        """Backport of StrEnum for Python < 3.11."""
 
 import torch
 from torch._ops import OpOverload
+
+
+class AutogradType(StrEnum):
+    AUTOGRAD_KERNEL = "autograd_kernel"
+    MATH_KERNEL = "math_kernel"
+    FALLTHROUGH = "fallthrough"
+    OTHER = "other"
+    NONE = "none"
 
 
 @dataclass(frozen=True)
@@ -36,7 +53,7 @@ class DispatchInfo:
     autograd_entry: DispatchEntry | None  # AutogradCPU entry
     adiov_entry: DispatchEntry | None  # ADInplaceOrView entry
     dense_entry: DispatchEntry | None  # Dense/CPU entry
-    autograd_type: str  # "autograd_kernel", "math_kernel", "fallthrough", "other", "none"
+    autograd_type: AutogradType
     has_adiov: bool  # non-fallthrough ADIOV kernel
     mode_sensitive: bool  # has non-fallthrough autograd entry (any type)
 
@@ -80,17 +97,17 @@ def _parse_dispatch_table(op_name: str) -> dict[str, DispatchEntry]:
     return entries
 
 
-def _classify_autograd_type(entry: DispatchEntry | None) -> str:
+def _classify_autograd_type(entry: DispatchEntry | None) -> AutogradType:
     """Classify the autograd behavior from an AutogradCPU entry."""
     if entry is None:
-        return "none"
+        return AutogradType.NONE
     if entry.is_fallthrough:
-        return "fallthrough"
+        return AutogradType.FALLTHROUGH
     if "math kernel" in entry.tag:
-        return "math_kernel"
+        return AutogradType.MATH_KERNEL
     if "autograd kernel" in entry.tag:
-        return "autograd_kernel"
-    return "other"
+        return AutogradType.AUTOGRAD_KERNEL
+    return AutogradType.OTHER
 
 
 def _build_dispatch_info(op_name: str) -> DispatchInfo:
@@ -103,7 +120,7 @@ def _build_dispatch_info(op_name: str) -> DispatchInfo:
 
     ag_type = _classify_autograd_type(ag)
     has_adiov = adiov is not None and not adiov.is_fallthrough
-    mode_sensitive = ag_type not in ("none", "fallthrough")
+    mode_sensitive = ag_type not in (AutogradType.NONE, AutogradType.FALLTHROUGH)
 
     return DispatchInfo(
         op_name=op_name,

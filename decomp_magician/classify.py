@@ -13,10 +13,13 @@ else:
 
     class StrEnum(str, Enum):
         """Backport of StrEnum for Python < 3.11."""
-from typing import NamedTuple
+from typing import TYPE_CHECKING, NamedTuple
 
 import torch
 from torch._ops import OpOverload
+
+if TYPE_CHECKING:
+    from decomp_magician.dispatch import AutogradType
 
 
 class DecompType(StrEnum):
@@ -66,7 +69,7 @@ class OpClass:
     inductor_kept: bool = False
     op_category: OpCategory = OpCategory.OTHER
     dtensor_strategy: DtensorStrategy | None = None
-    autograd_type: str | None = None  # "autograd_kernel", "math_kernel", etc.
+    autograd_type: AutogradType | None = None
     has_adiov: bool | None = None  # non-fallthrough ADInplaceOrView kernel
 
     def __post_init__(self):

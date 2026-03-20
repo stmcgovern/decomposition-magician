@@ -3,6 +3,7 @@
 import torch
 
 from decomp_magician.dispatch import (
+    AutogradType,
     DispatchEntry,
     get_dispatch_info,
     get_dispatch_info_cached,
@@ -40,7 +41,7 @@ class TestGetDispatchInfo:
         """mm has [autograd kernel] at AutogradCPU (verified from raw table)."""
         op = torch.ops.aten.mm.default
         info = get_dispatch_info(op)
-        assert info.autograd_type == "autograd_kernel"
+        assert info.autograd_type == AutogradType.AUTOGRAD_KERNEL
 
     def test_mm_adiov_is_fallthrough(self):
         """mm has ADIOV=fallthrough (verified from raw table)."""

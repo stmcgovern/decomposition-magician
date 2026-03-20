@@ -4,12 +4,13 @@ from __future__ import annotations
 
 from collections import Counter
 from dataclasses import dataclass, replace
+from typing import NamedTuple
 
 import torch
 from torch._ops import OpOverload
 from torch.utils._python_dispatch import TorchDispatchMode
 
-from decomp_magician.classify import DecompType, OpClass, classify
+from decomp_magician.classify import DecompType, OpClass, classify, is_dtensor_gap, is_dtensor_intercept
 
 
 def op_display_name(op) -> str:
@@ -672,3 +673,125 @@ def build_tree(
     )
 
     return DecompNode(op=op, children=children, classification=cls)
+
+
+class LeafFrontier(NamedTuple):
+    counts: Counter[str]
+    inductor_kept: set[str]
+    untraceable: set[str]
+    dtensor_uncovered: set[str]
+
+
+def collect_leaf_frontier(node: DecompNode) -> LeafFrontier:
+    """Walk a tree and collect the leaf frontier with propagated counts."""
+    counts = collect_leaf_counts(node)
+    inductor_kept_ops: set[str] = set()
+    untraceable_ops: set[str] = set()
+    dtensor_uncovered_ops: set[str] = set()
+
+    def walk(n: DecompNode, ancestor_covered: bool = False) -> None:
+        covered = ancestor_covered or is_dtensor_intercept(
+            n.classification.dtensor_strategy
+        )
+        if not n.children:
+            name = op_display_name(n.op)
+            if n.classification.inductor_kept:
+                inductor_kept_ops.add(name)
+            if not n.traceable:
+                untraceable_ops.add(name)
+            if is_dtensor_gap(n.classification.dtensor_strategy) and not covered:
+                dtensor_uncovered_ops.add(name)
+            return
+        for c in n.children:
+            walk(c, covered)
+
+    walk(node)
+    return LeafFrontier(counts, inductor_kept_ops, untraceable_ops, dtensor_uncovered_ops)
+
+
+def collect_untraceable_errors(node: DecompNode) -> list[tuple[str, str]]:
+    """Collect unique (op_name, error) pairs for untraceable nodes."""
+    seen: set[str] = set()
+    errors: list[tuple[str, str]] = []
+
+    def walk(n: DecompNode) -> None:
+        if not n.traceable and n.error:
+            name = op_display_name(n.op)
+            if name not in seen:
+                seen.add(name)
+                errors.append((name, n.error))
+        for c in n.children:
+            walk(c)
+
+    walk(node)
+    return errors
+
+
+@dataclass(frozen=True)
+class PurityResult:
+    """Purity analysis of a decomposition tree."""
+    op: str
+    is_pure: bool
+    total_leaves: int
+    mutable_leaves: tuple[tuple[str, int], ...]
+    adiov_leaves: tuple[tuple[str, int], ...]
+    mode_sensitive_leaves: tuple[tuple[str, int], ...]
+
+
+def analyze_purity(node: DecompNode) -> PurityResult:
+    """Analyze purity of a decomposition tree."""
+    from decomp_magician.dispatch import get_dispatch_info_cached
+
+    counts = collect_leaf_counts(node)
+    mutable_names: set[str] = set()
+    adiov_names: set[str] = set()
+    mode_sensitive_names: set[str] = set()
+
+    def walk(n: DecompNode) -> None:
+        if not n.children:
+            name = op_display_name(n.op)
+            dinfo = get_dispatch_info_cached(n.op)
+            if n.classification.is_mutable:
+                mutable_names.add(name)
+            if dinfo.has_adiov:
+                adiov_names.add(name)
+            if dinfo.mode_sensitive:
+                mode_sensitive_names.add(name)
+            return
+        for c in n.children:
+            walk(c)
+
+    walk(node)
+
+    mutable = sorted(((n, counts[n]) for n in mutable_names), key=lambda x: -x[1])
+    adiov = sorted(((n, counts[n]) for n in adiov_names), key=lambda x: -x[1])
+    ms = sorted(((n, counts[n]) for n in mode_sensitive_names), key=lambda x: -x[1])
+
+    return PurityResult(
+        op=op_display_name(node.op),
+        is_pure=len(mutable) == 0 and len(adiov) == 0,
+        total_leaves=len(counts),
+        mutable_leaves=tuple(mutable),
+        adiov_leaves=tuple(adiov),
+        mode_sensitive_leaves=tuple(ms),
+    )
+
+
+def filter_adiov_paths(node: DecompNode) -> DecompNode | None:
+    """Filter tree to only include paths that reach ADIOV-bearing ops."""
+    from decomp_magician.dispatch import get_dispatch_info_cached
+
+    if not node.children:
+        dinfo = get_dispatch_info_cached(node.op)
+        return node if dinfo.has_adiov else None
+
+    kept_children = []
+    for child in node.children:
+        filtered = filter_adiov_paths(child)
+        if filtered is not None:
+            kept_children.append(filtered)
+
+    if not kept_children:
+        return None
+
+    return replace(node, children=tuple(kept_children))

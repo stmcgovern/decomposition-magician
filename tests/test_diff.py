@@ -6,7 +6,7 @@ from collections import Counter
 import torch
 
 from decomp_magician.diff import DecompDiff, compute_diff, compute_diff_ops
-from decomp_magician.__main__ import main
+from decomp_magician.cli import main
 
 
 class TestDecompDiffProperties:
