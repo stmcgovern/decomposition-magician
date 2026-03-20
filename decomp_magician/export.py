@@ -216,8 +216,7 @@ def tree_to_dict(node: DecompNode) -> dict:
     }
     if node.error:
         d["error"] = node.error
-    if cls.dtensor_strategy is not None:
-        d["dtensor_strategy"] = cls.dtensor_strategy
+    d["dtensor_strategy"] = cls.dtensor_strategy
     if node.children:
         d["children"] = [tree_to_dict(c) for c in node.children]
     return d

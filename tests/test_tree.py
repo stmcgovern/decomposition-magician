@@ -4,7 +4,10 @@ import pytest
 import torch
 
 from decomp_magician.classify import OpClass
-from decomp_magician.tree import DecompNode, build_tree, collect_leaf_counts, _trace_decomp, _make_meta_args
+from decomp_magician.tree import (
+    DecompNode, build_tree, collect_leaf_counts,
+    _trace_decomp, _make_meta_args,
+)
 
 
 class TestDecompNodeInvariants:
@@ -276,3 +279,27 @@ class TestCollectLeafCounts:
 
         auto = collect_leaf_counts(node)
         assert auto == manual
+
+
+class TestClassifyCache:
+    def test_classify_is_cached(self):
+        """classify() returns the same object on repeated calls."""
+        from decomp_magician.classify import classify
+        op = torch.ops.aten.addcmul.default
+        cls1 = classify(op)
+        cls2 = classify(op)
+        assert cls1 is cls2
+
+    def test_classify_always_has_dtensor_strategy(self):
+        """classify() always populates dtensor_strategy (no None)."""
+        from decomp_magician.classify import classify
+        op = torch.ops.aten.addcmul.default
+        cls = classify(op)
+        assert cls.dtensor_strategy is not None
+
+    def test_classify_returns_opclass(self):
+        from decomp_magician.classify import classify
+        op = torch.ops.aten.addcmul.default
+        cls = classify(op)
+        assert isinstance(cls, OpClass)
+        assert cls.decomp_type in ("table", "both")

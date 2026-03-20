@@ -473,6 +473,8 @@ class TestJson:
 
 
 class TestDtensorAncestorCoverage:
+    _DT_CFG = FormatConfig(show_dtensor=True)
+
     def _make_node(self, strategy, children=()):
         op = torch.ops.aten.mul.Tensor
         cls = OpClass(
@@ -487,46 +489,46 @@ class TestDtensorAncestorCoverage:
     def test_missing_suppressed_when_ancestor_registered(self):
         leaf = self._make_node("missing")
         parent = self._make_node("registered", children=[leaf])
-        output = format_tree(parent, _CFG)
+        output = format_tree(parent, self._DT_CFG)
         assert "MISSING" not in output
         assert "via ancestor" in output
 
     def test_missing_shown_when_no_ancestor_registered(self):
         leaf = self._make_node("missing")
         parent = self._make_node("decomp-fallback", children=[leaf])
-        output = format_tree(parent, _CFG)
+        output = format_tree(parent, self._DT_CFG)
         assert "MISSING" in output
 
     def test_decomp_fallback_does_not_cover(self):
         leaf = self._make_node("missing")
         mid = self._make_node("decomp-fallback", children=[leaf])
         root = self._make_node("decomp-fallback", children=[mid])
-        output = format_tree(root, _CFG)
+        output = format_tree(root, self._DT_CFG)
         assert "MISSING" in output
 
     def test_registered_covers_deep_descendants(self):
         deep_leaf = self._make_node("missing")
         mid = self._make_node("missing", children=[deep_leaf])
         root = self._make_node("registered", children=[mid])
-        output = format_tree(root, _CFG)
+        output = format_tree(root, self._DT_CFG)
         assert "MISSING" not in output
 
     def test_summary_covered_verdict(self):
         leaf = self._make_node("missing")
         parent = self._make_node("registered", children=[leaf])
-        summary = format_summary(parent, _CFG)
+        summary = format_summary(parent, self._DT_CFG)
         assert "dtensor: covered" in summary
 
     def test_summary_uncovered_verdict(self):
         leaf = self._make_node("missing")
         parent = self._make_node("decomp-fallback", children=[leaf])
-        summary = format_summary(parent, _CFG)
+        summary = format_summary(parent, self._DT_CFG)
         assert "1 uncovered" in summary
 
     def test_summary_no_verdict_without_dtensor(self):
-        leaf = self._make_node(None)
-        parent = self._make_node(None, children=[leaf])
-        summary = format_summary(parent, _CFG)
+        leaf = self._make_node("missing")
+        parent = self._make_node("missing", children=[leaf])
+        summary = format_summary(parent, _CFG)  # show_dtensor=False
         assert "dtensor" not in summary
 
     def test_leaves_shows_uncovered(self):

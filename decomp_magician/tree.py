@@ -624,7 +624,6 @@ def _make_backward_arg(arg):
 def build_tree(
     op: OpOverload,
     depth: int = -1,
-    dtensor: bool = False,
     compile: bool = False,
     _ancestors: frozenset[str] | None = None,
 ) -> DecompNode:
@@ -633,13 +632,12 @@ def build_tree(
     Args:
         op: The operator to decompose.
         depth: Maximum recursion depth. -1 for unlimited.
-        dtensor: If True, classify DTensor strategy coverage.
         compile: If True, treat inductor-kept ops as leaves.
     """
     if _ancestors is None:
         _ancestors = frozenset()
 
-    cls = classify(op, dtensor=dtensor)
+    cls = classify(op)
 
     # Leaf or depth exhausted — no children
     if cls.decomp_type == "leaf" or depth == 0:
@@ -665,7 +663,7 @@ def build_tree(
 
     children = tuple(
         replace(
-            build_tree(child_op, depth=next_depth, dtensor=dtensor,
+            build_tree(child_op, depth=next_depth,
                        compile=compile, _ancestors=child_ancestors),
             count=count,
         )

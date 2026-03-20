@@ -62,6 +62,7 @@ def main(argv: list[str] | None = None) -> int:
         color=(not args.no_color and not args.json and should_use_color()),
         show_dispatch=args.dispatch_table,
         show_mode_sensitivity=args.mode_sensitivity,
+        show_dtensor=args.dtensor,
     )
 
     # Stats mode
@@ -211,7 +212,7 @@ def _warn_untraceable(node, cfg: FormatConfig) -> None:
 # ---------------------------------------------------------------------------
 
 def _run_tree(op, resolved_name: str, args, cfg: FormatConfig) -> int:
-    node = build_tree(op, depth=args.depth, dtensor=args.dtensor, compile=args.compile)
+    node = build_tree(op, depth=args.depth, compile=args.compile)
 
     if args.pure:
         purity = analyze_purity(node)
@@ -521,8 +522,8 @@ def _run_model(args, cfg: FormatConfig) -> int:
         from decomp_magician.classify import classify as classify_op
         for name, op_obj in op_objects.items():
             try:
-                cls = classify_op(op_obj, dtensor=True)
-                dtensor_info[name] = cls.dtensor_strategy or DtensorStrategy.MISSING
+                cls = classify_op(op_obj)
+                dtensor_info[name] = cls.dtensor_strategy
             except Exception:
                 dtensor_info[name] = DtensorStrategy.MISSING
 

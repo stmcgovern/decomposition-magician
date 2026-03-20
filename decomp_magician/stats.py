@@ -82,8 +82,17 @@ class StatsResult:
                 )
 
 
-def compute_stats(compile: bool = False, dtensor: bool = False) -> StatsResult:
-    """Compute statistics across all decomposable ops."""
+def compute_stats(
+    compile: bool = False, dtensor: bool = False,
+) -> StatsResult:
+    """Compute statistics across all decomposable ops.
+
+    Args:
+        compile: If True, treat inductor-kept ops as leaves.
+        dtensor: If True, include DTensor coverage analysis in the result.
+                 Classification always includes DTensor strategy (it's intrinsic);
+                 this flag controls whether to aggregate and report it.
+    """
     from torch._decomp import decomposition_table
 
     all_ops = list(decomposition_table.keys())
@@ -98,10 +107,7 @@ def compute_stats(compile: bool = False, dtensor: bool = False) -> StatsResult:
     non_out_count = 0
 
     # DTensor tracking
-    dt_registered = 0
-    dt_decomp_fallback = 0
-    dt_missing = 0
-    dt_not_applicable = 0
+    dt_by_strategy: Counter[str] = Counter()
     dt_fully_covered = 0
     dt_has_gaps = 0
     dt_uncovered_leaves: Counter[str] = Counter()
@@ -114,7 +120,7 @@ def compute_stats(compile: bool = False, dtensor: bool = False) -> StatsResult:
         non_out_count += 1
 
         try:
-            cls = classify(op, dtensor=dtensor)
+            cls = classify(op)
         except Exception:
             classify_errors += 1
             continue
@@ -124,19 +130,12 @@ def compute_stats(compile: bool = False, dtensor: bool = False) -> StatsResult:
             inductor_kept += 1
 
         if dtensor:
-            if cls.dtensor_strategy == "registered":
-                dt_registered += 1
-            elif cls.dtensor_strategy == "decomp-fallback":
-                dt_decomp_fallback += 1
-            elif cls.dtensor_strategy == "missing":
-                dt_missing += 1
-            elif cls.dtensor_strategy == "not-applicable":
-                dt_not_applicable += 1
+            dt_by_strategy[cls.dtensor_strategy] += 1
 
         try:
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore")
-                node = build_tree(op, compile=compile, dtensor=dtensor)
+                node = build_tree(op, compile=compile)
         except Exception as e:
             untraceable += 1
             untraceable_list.append((name, f"{type(e).__name__}: {e}"))
@@ -166,10 +165,10 @@ def compute_stats(compile: bool = False, dtensor: bool = False) -> StatsResult:
     dtensor_stats = None
     if dtensor:
         dtensor_stats = DtensorStats(
-            registered=dt_registered,
-            decomp_fallback=dt_decomp_fallback,
-            missing=dt_missing,
-            not_applicable=dt_not_applicable,
+            registered=dt_by_strategy["registered"],
+            decomp_fallback=dt_by_strategy["decomp-fallback"],
+            missing=dt_by_strategy["missing"],
+            not_applicable=dt_by_strategy["not-applicable"],
             fully_covered=dt_fully_covered,
             has_gaps=dt_has_gaps,
             top_uncovered=dt_uncovered_leaves.most_common(15),

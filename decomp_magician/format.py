@@ -41,6 +41,7 @@ class FormatConfig:
     color: bool = False
     show_dispatch: bool = False
     show_mode_sensitivity: bool = False
+    show_dtensor: bool = False
 
 
 def should_use_color() -> bool:
@@ -140,7 +141,7 @@ def _format_annotation(
             else:
                 annotation += "  " + _c(cfg, _GREEN, "mode-invariant")
 
-    if cls.dtensor_strategy is not None:
+    if cfg.show_dtensor:
         if cls.dtensor_strategy == DtensorStrategy.REGISTERED:
             annotation += "  " + _c(cfg, _GREEN, "dtensor: ok")
         elif cls.dtensor_strategy == DtensorStrategy.DECOMP_FALLBACK:
@@ -268,8 +269,7 @@ def format_summary(node: DecompNode, cfg: FormatConfig) -> str:
             parts.append(_c(cfg, _RED, f"{n_unique} untraceable {op_word} ({untraceable_nodes} nodes)"))
         else:
             parts.append(_c(cfg, _RED, f"{n_unique} untraceable"))
-    has_dtensor = node.classification.dtensor_strategy is not None
-    if has_dtensor:
+    if cfg.show_dtensor:
         if dtensor_missing > 0:
             parts.append(_c(cfg, _RED, f"dtensor: {dtensor_missing} uncovered"))
         else:

@@ -13,13 +13,10 @@ else:
 
     class StrEnum(str, Enum):
         """Backport of StrEnum for Python < 3.11."""
-from typing import TYPE_CHECKING, NamedTuple
+from typing import NamedTuple
 
 import torch
 from torch._ops import OpOverload
-
-if TYPE_CHECKING:
-    from decomp_magician.dispatch import AutogradType
 
 
 class DecompType(StrEnum):
@@ -68,9 +65,7 @@ class OpClass:
     has_alias_info: bool = False
     inductor_kept: bool = False
     op_category: OpCategory = OpCategory.OTHER
-    dtensor_strategy: DtensorStrategy | None = None
-    autograd_type: AutogradType | None = None
-    has_adiov: bool | None = None  # non-fallthrough ADInplaceOrView kernel
+    dtensor_strategy: DtensorStrategy = DtensorStrategy.MISSING
 
     def __post_init__(self):
         if self.decomp_type not in DECOMP_TYPES:
@@ -78,14 +73,14 @@ class OpClass:
                 f"Invalid decomp_type {self.decomp_type!r}, "
                 f"expected one of {sorted(DECOMP_TYPES)}"
             )
-        if self.dtensor_strategy is not None and self.dtensor_strategy not in DTENSOR_STRATEGIES:
+        if self.dtensor_strategy not in DTENSOR_STRATEGIES:
             raise ValueError(
                 f"Invalid dtensor_strategy {self.dtensor_strategy!r}, "
-                f"expected one of {sorted(DTENSOR_STRATEGIES)} or None"
+                f"expected one of {sorted(DTENSOR_STRATEGIES)}"
             )
 
 
-def is_dtensor_intercept(strategy: DtensorStrategy | None) -> bool:
+def is_dtensor_intercept(strategy: DtensorStrategy) -> bool:
     """Whether this DTensor strategy intercepts dispatch (children unreachable).
 
     Only 'registered' strategies intercept — 'decomp-fallback' traces through
@@ -94,7 +89,7 @@ def is_dtensor_intercept(strategy: DtensorStrategy | None) -> bool:
     return strategy == DtensorStrategy.REGISTERED
 
 
-def is_dtensor_gap(strategy: DtensorStrategy | None) -> bool:
+def is_dtensor_gap(strategy: DtensorStrategy) -> bool:
     """Whether this DTensor strategy represents a real coverage gap.
 
     Only 'missing' is a gap — the op has tensor inputs (so DTensor dispatch
@@ -367,24 +362,21 @@ def _get_dtensor_strategy(op: OpOverload) -> DtensorStrategy:
     return DtensorStrategy.MISSING
 
 
-def classify(op: OpOverload, dtensor: bool = False, dispatch: bool = False) -> OpClass:
+_classify_cache: dict[OpOverload, OpClass] = {}
+
+
+def classify(op: OpOverload) -> OpClass:
     """Classify an op's decomposition type, backend support, and properties.
 
-    Args:
-        op: The operator to classify.
-        dtensor: If True, check DTensor sharding strategy.
-        dispatch: If True, populate autograd_type and has_adiov fields
-                  from the dispatch table (requires _dispatch_dump_table).
+    An op's classification is intrinsic — it doesn't depend on what
+    questions you plan to ask about it.  Results are globally cached:
+    the second call for the same op is a dict lookup.
     """
-    autograd_type = None
-    has_adiov = None
-    if dispatch:
-        from decomp_magician.dispatch import get_dispatch_info
-        dinfo = get_dispatch_info(op)
-        autograd_type = dinfo.autograd_type
-        has_adiov = dinfo.has_adiov
+    cached = _classify_cache.get(op)
+    if cached is not None:
+        return cached
 
-    return OpClass(
+    result = OpClass(
         decomp_type=_get_decomp_type(op),
         has_backend=_get_backends(op),
         tags=_get_tags(op),
@@ -394,7 +386,7 @@ def classify(op: OpOverload, dtensor: bool = False, dispatch: bool = False) -> O
         ),
         inductor_kept=op.name() in _build_inductor_kept(),
         op_category=_get_op_category(op),
-        dtensor_strategy=_get_dtensor_strategy(op) if dtensor else None,
-        autograd_type=autograd_type,
-        has_adiov=has_adiov,
+        dtensor_strategy=_get_dtensor_strategy(op),
     )
+    _classify_cache[op] = result
+    return result
