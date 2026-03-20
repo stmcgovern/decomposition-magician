@@ -7,7 +7,7 @@ from collections import Counter
 from dataclasses import dataclass
 
 from decomp_magician.classify import classify, is_dtensor_intercept, is_dtensor_gap
-from decomp_magician.reverse import _is_out_variant
+from decomp_magician.reverse import is_out_variant
 from decomp_magician.tree import DecompNode, build_tree, op_display_name
 
 
@@ -108,7 +108,7 @@ def compute_stats(compile: bool = False, dtensor: bool = False) -> StatsResult:
 
     for op in all_ops:
         name = op_display_name(op)
-        if _is_out_variant(name):
+        if is_out_variant(name):
             continue
 
         non_out_count += 1

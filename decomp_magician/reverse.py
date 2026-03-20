@@ -3,10 +3,19 @@
 from __future__ import annotations
 
 from collections import Counter
+from dataclasses import dataclass
 
 from torch._ops import OpOverload
 
 from decomp_magician.tree import DecompNode, build_tree, op_display_name
+
+
+@dataclass(frozen=True)
+class ReverseEntry:
+    """A single result from reverse_lookup."""
+    op: str
+    count: int
+    target_depth: int
 
 
 def _search_tree(node: DecompNode, target: str) -> tuple[Counter[str], int | None]:
@@ -42,7 +51,7 @@ def _get_all_decomposable_ops() -> list[OpOverload]:
     return list(decomposition_table.keys())
 
 
-def _is_out_variant(name: str) -> bool:
+def is_out_variant(name: str) -> bool:
     """Check if an op name is an _out variant."""
     overload = name.rsplit(".", 1)[-1] if "." in name else ""
     return overload == "out" or overload.endswith("_out")
@@ -53,7 +62,7 @@ def reverse_lookup(
     depth: int = -1,
     compile: bool = False,
     include_out: bool = False,
-) -> list[dict]:
+) -> list[ReverseEntry]:
     """Find all ops whose decomposition tree contains the target op.
 
     Scans the decomposition table (CIA-only ops excluded due to C-level crashes).
@@ -64,13 +73,12 @@ def reverse_lookup(
         compile: If True, treat inductor-kept ops as leaves.
         include_out: If True, include _out variant ops (usually duplicates).
 
-    Returns a list of dicts sorted by count descending:
-        [{"op": name, "count": n, "target_depth": d}, ...]
+    Returns a list of ReverseEntry sorted by count descending.
     """
     import warnings
 
     ops = _get_all_decomposable_ops()
-    results = []
+    results: list[ReverseEntry] = []
 
     for op in ops:
         name = op_display_name(op)
@@ -78,7 +86,7 @@ def reverse_lookup(
         if name == target:
             continue
         # Skip _out variants unless requested
-        if not include_out and _is_out_variant(name):
+        if not include_out and is_out_variant(name):
             continue
         try:
             with warnings.catch_warnings():
@@ -89,11 +97,11 @@ def reverse_lookup(
 
         all_ops, target_depth = _search_tree(node, target)
         if target in all_ops:
-            results.append({
-                "op": name,
-                "count": all_ops[target],
-                "target_depth": target_depth or 0,
-            })
+            results.append(ReverseEntry(
+                op=name,
+                count=all_ops[target],
+                target_depth=target_depth or 0,
+            ))
 
-    results.sort(key=lambda r: r["count"], reverse=True)
+    results.sort(key=lambda r: r.count, reverse=True)
     return results

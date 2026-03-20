@@ -2,7 +2,7 @@
 
 import json
 
-from decomp_magician.reverse import reverse_lookup
+from decomp_magician.reverse import ReverseEntry, reverse_lookup
 from decomp_magician.__main__ import main
 
 
@@ -10,25 +10,26 @@ class TestReverseLookup:
     def test_prims_mul_has_results(self):
         results = reverse_lookup("prims.mul.default", depth=1)
         assert len(results) > 0
+        assert all(isinstance(r, ReverseEntry) for r in results)
         # addcmul decomposes into mul.Tensor which decomposes into prims.mul
         # but at depth=1, we only see direct children
-        ops = [r["op"] for r in results]
+        ops = [r.op for r in results]
         assert any("mul" in op for op in ops)
 
     def test_squeeze_dims_found(self):
         results = reverse_lookup("aten.squeeze.dims", depth=1)
-        ops = [r["op"] for r in results]
+        ops = [r.op for r in results]
         assert any("batch_norm" in op for op in ops)
 
     def test_sorted_by_count(self):
         results = reverse_lookup("prims.mul.default", depth=1)
-        counts = [r["count"] for r in results]
+        counts = [r.count for r in results]
         assert counts == sorted(counts, reverse=True)
 
     def test_excludes_self(self):
         """The target op itself should not appear in results."""
         results = reverse_lookup("prims.mul.default")
-        ops = [r["op"] for r in results]
+        ops = [r.op for r in results]
         assert "prims.mul.default" not in ops
 
     def test_nonexistent_target(self):
@@ -43,28 +44,27 @@ class TestReverseLookup:
 
     def test_result_has_target_depth(self):
         results = reverse_lookup("prims.mul.default", depth=1)
-        assert all("target_depth" in r for r in results)
-        assert all(r["target_depth"] >= 1 for r in results)
+        assert all(r.target_depth >= 1 for r in results)
 
     def test_target_depth_is_shallowest(self):
         """target_depth should be the shallowest level at which target appears."""
         # mul.Tensor decomposes directly into prims.mul at depth 1
         results = reverse_lookup("prims.mul.default", depth=1)
-        mul_results = [r for r in results if "mul.Tensor" in r["op"]]
+        mul_results = [r for r in results if "mul.Tensor" in r.op]
         if mul_results:
-            assert mul_results[0]["target_depth"] == 1
+            assert mul_results[0].target_depth == 1
 
     def test_scans_table_ops(self):
         """Reverse lookup scans decomposition table ops."""
         # mul.Tensor is in the table and decomposes into prims.mul
         results = reverse_lookup("prims.mul.default", depth=1)
-        ops = [r["op"] for r in results]
+        ops = [r.op for r in results]
         assert any("mul.Tensor" in op for op in ops)
 
     def test_excludes_out_variants_by_default(self):
         """_out variants are filtered by default."""
         results = reverse_lookup("prims.mul.default")
-        ops = [r["op"] for r in results]
+        ops = [r.op for r in results]
         assert not any(op.endswith(".out") for op in ops)
 
     def test_include_out_flag(self):

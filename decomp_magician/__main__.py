@@ -607,7 +607,9 @@ def _run_reverse(target: str, args) -> int:
                              include_out=args.include_out)
 
     if args.json:
-        print(json.dumps({"target": target, "producers": results}, indent=2))
+        producers = [{"op": r.op, "count": r.count, "target_depth": r.target_depth}
+                     for r in results]
+        print(json.dumps({"target": target, "producers": producers}, indent=2))
         return 0
 
     if not results:
@@ -631,12 +633,12 @@ def _run_reverse(target: str, args) -> int:
                     pass
         return 0
 
-    name_width = max(len(r["op"]) for r in results)
+    name_width = max(len(r.op) for r in results)
     mode = "compile" if args.compile else "full"
     lines = [_c(_BOLD, f"{len(results)} ops") + f" decompose into {target} ({mode} decomposition):"]
     for r in results:
-        depth_str = _c(_DIM, f"at depth {r['target_depth']}")
-        lines.append(f"  {r['op']:<{name_width}}  x{r['count']:>3}  ({depth_str})")
+        depth_str = _c(_DIM, f"at depth {r.target_depth}")
+        lines.append(f"  {r.op:<{name_width}}  x{r.count:>3}  ({depth_str})")
     print("\n".join(lines))
     return 0
 
