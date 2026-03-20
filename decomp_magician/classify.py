@@ -292,13 +292,19 @@ def _get_op_category(op: OpOverload) -> OpCategory:
     """Classify an op's computational pattern.
 
     Detection priority:
-    1. PyTorch tags (authoritative: pointwise, reduction, view_copy)
-    2. Schema analysis (views, factories)
+    1. PyTorch tags (authoritative: pointwise, reduction, view_copy,
+       nondeterministic_seeded)
+    2. Schema analysis (non-write return alias → view, no tensor inputs → factory)
     3. Op name heuristics (norm, linalg, loss, fft, spatial, etc.)
     4. Fallback → OTHER
+
+    Note: categories mix computational shape (pointwise, reduction, view, factory)
+    with ML domain (loss, norm, spatial). This is intentional — the classification
+    serves human comprehension, not a formal type system.
     """
-    # 1. PyTorch tags — authoritative
     tags = op.tags
+
+    # 1. PyTorch tags — authoritative, structural
     if torch.Tag.pointwise in tags:
         return OpCategory.POINTWISE
     if torch.Tag.reduction in tags:
@@ -306,13 +312,15 @@ def _get_op_category(op: OpOverload) -> OpCategory:
     if torch.Tag.view_copy in tags:
         return OpCategory.VIEW
 
-    # 2. Schema analysis
+    # 2. Schema analysis — structural
     if _is_view_op(op):
         return OpCategory.VIEW
     if not _has_tensor_input(op):
         return OpCategory.FACTORY
+    if torch.Tag.nondeterministic_seeded in tags:
+        return OpCategory.RANDOM
 
-    # 3. Name heuristics
+    # 3. Name heuristics — fragile, but useful for domain categories
     name = op.name().split("::")[1] if "::" in op.name() else op.name()
     base = name.split(".")[0]
 

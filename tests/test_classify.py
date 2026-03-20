@@ -258,6 +258,7 @@ class TestOpCategory:
 
     def test_category_agrees_with_tags(self):
         """Cross-check: ops with PyTorch tags get the matching category."""
+        from decomp_magician.classify import _has_tensor_input
         from torch._ops import OpOverload
 
         checked = 0
@@ -276,6 +277,12 @@ class TestOpCategory:
                     assert cls.op_category == OpCategory.REDUCTION, f"{op.name()}"
                 elif torch.Tag.view_copy in op.tags:
                     assert cls.op_category == OpCategory.VIEW, f"{op.name()}"
+                # nondeterministic_seeded → RANDOM, unless factory (no tensor inputs)
+                if (torch.Tag.nondeterministic_seeded in op.tags
+                        and _has_tensor_input(op)):
+                    assert cls.op_category == OpCategory.RANDOM, (
+                        f"{op.name()}: seeded + tensor inputs but {cls.op_category}"
+                    )
                 checked += 1
             except Exception:
                 continue
