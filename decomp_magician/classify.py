@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import re
 import sys
 
 if sys.version_info >= (3, 11):
@@ -32,9 +33,27 @@ class DtensorStrategy(StrEnum):
     NOT_APPLICABLE = "not-applicable"
 
 
+class OpCategory(StrEnum):
+    """Computational pattern of an op."""
+    POINTWISE = "pointwise"
+    REDUCTION = "reduction"
+    VIEW = "view"
+    FACTORY = "factory"
+    SCATTER_GATHER = "scatter_gather"
+    LINALG = "linalg"
+    NORM = "norm"
+    LOSS = "loss"
+    FFT = "fft"
+    SPATIAL = "spatial"
+    SCAN = "scan"
+    RANDOM = "random"
+    OTHER = "other"
+
+
 # Keep for backward compatibility with any external code checking membership
 DECOMP_TYPES = frozenset(DecompType)
 DTENSOR_STRATEGIES = frozenset(DtensorStrategy)
+OP_CATEGORIES = frozenset(OpCategory)
 
 
 @dataclass(frozen=True)
@@ -45,6 +64,7 @@ class OpClass:
     is_mutable: bool = False
     has_alias_info: bool = False
     inductor_kept: bool = False
+    op_category: OpCategory = OpCategory.OTHER
     dtensor_strategy: DtensorStrategy | None = None
     autograd_type: str | None = None  # "autograd_kernel", "math_kernel", etc.
     has_adiov: bool | None = None  # non-fallthrough ADInplaceOrView kernel
@@ -222,6 +242,95 @@ def _has_tensor_input(op: OpOverload) -> bool:
     return any(_type_involves_tensor(arg.type) for arg in op._schema.arguments)
 
 
+# Name patterns for category detection (compiled once).
+_P = re.compile  # shorthand
+
+_CATEGORY_PATTERNS: list[tuple[re.Pattern[str], OpCategory]] = [
+    (_P(r"(^|_)(conv|pool|upsample|pad|interpolate|avg_pool|max_pool"
+        r"|adaptive_avg|adaptive_max|col2im|im2col|grid_sampler|unfold)"),
+     OpCategory.SPATIAL),
+    (_P(r"(^|_)(mm|matmul|bmm|addmm|addbmm|baddbmm|dot|mv|linalg"
+        r"|svd|eig|cholesky|qr|lu|lstsq|solve|inv|det|slogdet"
+        r"|pinverse|triangular_solve|ormqr|geqrf)"),
+     OpCategory.LINALG),
+    (_P(r"(^|_)(batch_norm|layer_norm|group_norm|instance_norm"
+        r"|renorm|weight_norm|rms_norm)"),
+     OpCategory.NORM),
+    (_P(r"(^|_)(nll_loss|cross_entropy|binary_cross_entropy|mse_loss"
+        r"|smooth_l1_loss|huber_loss|kl_div|cosine_embedding_loss"
+        r"|ctc_loss|margin_ranking_loss|multi_margin_loss"
+        r"|multilabel_margin_loss|triplet_margin"
+        r"|hinge_embedding_loss|poisson_nll_loss|soft_margin_loss)"),
+     OpCategory.LOSS),
+    (_P(r"(^|_)(fft|ifft|rfft|irfft|hfft|ihfft|stft|istft)"),
+     OpCategory.FFT),
+    (_P(r"(^|_)(scatter|gather|index_put|index_add|index_copy"
+        r"|index_fill|index_select|index\.Tensor|masked_fill"
+        r"|masked_scatter|masked_select|put|take|embedding|one_hot)"),
+     OpCategory.SCATTER_GATHER),
+    (_P(r"(^|_)(cumsum|cumprod|cummax|cummin|logcumsumexp"
+        r"|scan|associative_scan)"),
+     OpCategory.SCAN),
+    (_P(r"(^|_)(bernoulli|multinomial|normal|uniform|rand"
+        r"|poisson|exponential|geometric|log_normal|cauchy|dropout)"),
+     OpCategory.RANDOM),
+]
+
+
+def _is_view_op(op: OpOverload) -> bool:
+    """Detect view ops structurally: returns alias input without writing."""
+    returns = op._schema.returns
+    if not returns:
+        return False
+    return any(
+        r.alias_info is not None and not r.alias_info.is_write
+        for r in returns
+    )
+
+
+def _get_op_category(op: OpOverload) -> OpCategory:
+    """Classify an op's computational pattern.
+
+    Detection priority:
+    1. PyTorch tags (authoritative: pointwise, reduction, view_copy,
+       nondeterministic_seeded)
+    2. Schema analysis (non-write return alias → view, no tensor inputs → factory)
+    3. Op name heuristics (norm, linalg, loss, fft, spatial, etc.)
+    4. Fallback → OTHER
+
+    Note: categories mix computational shape (pointwise, reduction, view, factory)
+    with ML domain (loss, norm, spatial). This is intentional — the classification
+    serves human comprehension, not a formal type system.
+    """
+    tags = op.tags
+
+    # 1. PyTorch tags — authoritative, structural
+    if torch.Tag.pointwise in tags:
+        return OpCategory.POINTWISE
+    if torch.Tag.reduction in tags:
+        return OpCategory.REDUCTION
+    if torch.Tag.view_copy in tags:
+        return OpCategory.VIEW
+
+    # 2. Schema analysis — structural
+    if _is_view_op(op):
+        return OpCategory.VIEW
+    if not _has_tensor_input(op):
+        return OpCategory.FACTORY
+    if torch.Tag.nondeterministic_seeded in tags:
+        return OpCategory.RANDOM
+
+    # 3. Name heuristics — fragile, but useful for domain categories
+    name = op.name().split("::")[1] if "::" in op.name() else op.name()
+    base = name.split(".")[0]
+
+    for pattern, category in _CATEGORY_PATTERNS:
+        if pattern.search(base):
+            return category
+
+    return OpCategory.OTHER
+
+
 def _get_dtensor_strategy(op: OpOverload) -> DtensorStrategy:
     """Check DTensor sharding strategy registration status."""
     dt = _init_dtensor()
@@ -281,6 +390,7 @@ def classify(op: OpOverload, dtensor: bool = False, dispatch: bool = False) -> O
             arg.alias_info is not None for arg in op._schema.arguments
         ),
         inductor_kept=op.name() in _build_inductor_kept(),
+        op_category=_get_op_category(op),
         dtensor_strategy=_get_dtensor_strategy(op) if dtensor else None,
         autograd_type=autograd_type,
         has_adiov=has_adiov,
