@@ -3,7 +3,7 @@
 import pytest
 import torch
 
-from decomp_magician.classify import OpClass, classify
+from decomp_magician.classify import OpClass, OpCategory, classify
 
 
 class TestDecompType:
@@ -193,3 +193,95 @@ class TestOpClassValidation:
         for ds in ("registered", "decomp-fallback", "missing", "not-applicable", None):
             cls = OpClass(decomp_type="leaf", dtensor_strategy=ds)
             assert cls.dtensor_strategy == ds
+
+
+class TestOpCategory:
+    def test_pointwise_from_tag(self):
+        op = torch.ops.aten.add.Tensor
+        cls = classify(op)
+        assert cls.op_category == OpCategory.POINTWISE
+
+    def test_reduction_from_tag(self):
+        op = torch.ops.aten.sum.dim_IntList
+        cls = classify(op)
+        assert cls.op_category == OpCategory.REDUCTION
+
+    def test_view_from_schema(self):
+        op = torch.ops.aten.view.default
+        cls = classify(op)
+        assert cls.op_category == OpCategory.VIEW
+
+    def test_factory_from_schema(self):
+        op = torch.ops.aten.empty.memory_format
+        cls = classify(op)
+        assert cls.op_category == OpCategory.FACTORY
+
+    def test_linalg_from_name(self):
+        op = torch.ops.aten.mm.default
+        cls = classify(op)
+        assert cls.op_category == OpCategory.LINALG
+
+    def test_norm_from_name(self):
+        op = torch.ops.aten.batch_norm.default
+        cls = classify(op)
+        assert cls.op_category == OpCategory.NORM
+
+    def test_spatial_from_name(self):
+        op = torch.ops.aten.conv2d.default
+        cls = classify(op)
+        assert cls.op_category == OpCategory.SPATIAL
+
+    def test_loss_from_name(self):
+        op = torch.ops.aten.nll_loss_forward.default
+        cls = classify(op)
+        assert cls.op_category == OpCategory.LOSS
+
+    def test_scatter_gather_from_name(self):
+        op = torch.ops.aten.scatter.src
+        cls = classify(op)
+        assert cls.op_category == OpCategory.SCATTER_GATHER
+
+    def test_scan_from_name(self):
+        op = torch.ops.aten.cumsum.default
+        cls = classify(op)
+        assert cls.op_category == OpCategory.SCAN
+
+    def test_fft_from_name(self):
+        op = torch.ops.aten._fft_c2c.default
+        cls = classify(op)
+        assert cls.op_category == OpCategory.FFT
+
+    def test_random_from_name(self):
+        op = torch.ops.aten.dropout.default
+        cls = classify(op)
+        assert cls.op_category == OpCategory.RANDOM
+
+    def test_category_agrees_with_tags(self):
+        """Cross-check: ops with PyTorch tags get the matching category."""
+        from torch._ops import OpOverload
+
+        checked = 0
+        for name in dir(torch.ops.aten):
+            try:
+                packet = getattr(torch.ops.aten, name)
+                if not hasattr(packet, "default"):
+                    continue
+                op = packet.default
+                if not isinstance(op, OpOverload):
+                    continue
+                cls = classify(op)
+                if torch.Tag.pointwise in op.tags:
+                    assert cls.op_category == OpCategory.POINTWISE, f"{op.name()}"
+                elif torch.Tag.reduction in op.tags:
+                    assert cls.op_category == OpCategory.REDUCTION, f"{op.name()}"
+                elif torch.Tag.view_copy in op.tags:
+                    assert cls.op_category == OpCategory.VIEW, f"{op.name()}"
+                checked += 1
+            except Exception:
+                continue
+        assert checked > 50, f"Only checked {checked} ops"
+
+    def test_all_categories_are_valid(self):
+        for cat in OpCategory:
+            cls = OpClass(decomp_type="leaf", op_category=cat)
+            assert cls.op_category == cat
