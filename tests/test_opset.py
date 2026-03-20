@@ -6,7 +6,7 @@ import pytest
 import torch
 
 from decomp_magician.opset import OPSETS, OpsetCoverage, check_opset_coverage, is_core_aten
-from decomp_magician.__main__ import main
+from decomp_magician.cli import main
 
 
 class TestOpsetCoverageProperties:

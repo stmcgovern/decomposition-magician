@@ -5,7 +5,7 @@ from collections import Counter
 
 import torch
 
-from decomp_magician.__main__ import main
+from decomp_magician.cli import main
 from decomp_magician.tree import trace_backward, op_display_name
 
 

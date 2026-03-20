@@ -1,8 +1,14 @@
-"""Graph export: Mermaid and Graphviz DOT formats."""
+"""Graph export: Mermaid, Graphviz DOT, and JSON dict formats."""
 
 from __future__ import annotations
 
-from decomp_magician.tree import DecompNode, op_display_name
+from decomp_magician.dispatch import DispatchInfo, get_dispatch_info_cached
+from decomp_magician.tree import (
+    DecompNode,
+    collect_leaf_frontier,
+    collect_untraceable_errors,
+    op_display_name,
+)
 
 
 def _node_id(index: int) -> str:
@@ -187,3 +193,103 @@ def format_dot(node: DecompNode) -> str:
 
     lines.append("}")
     return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# JSON dict conversions
+# ---------------------------------------------------------------------------
+
+def tree_to_dict(node: DecompNode) -> dict:
+    """Convert a DecompNode tree to a JSON-serializable dict."""
+    cls = node.classification
+    d: dict = {
+        "op": op_display_name(node.op),
+        "schema": str(node.op._schema),
+        "decomp_type": cls.decomp_type,
+        "count": node.count,
+        "inductor_kept": cls.inductor_kept,
+        "backends": cls.has_backend,
+        "tags": cls.tags,
+        "mutable": cls.is_mutable,
+        "alias_info": cls.has_alias_info,
+        "traceable": node.traceable,
+    }
+    if node.error:
+        d["error"] = node.error
+    if cls.dtensor_strategy is not None:
+        d["dtensor_strategy"] = cls.dtensor_strategy
+    if node.children:
+        d["children"] = [tree_to_dict(c) for c in node.children]
+    return d
+
+
+def leaves_to_dict(node: DecompNode) -> dict:
+    """Convert leaf frontier to a JSON-serializable dict."""
+    root_name = op_display_name(node.op)
+
+    if not node.children:
+        return {"op": root_name, "decomp_type": "leaf", "leaves": []}
+
+    lf = collect_leaf_frontier(node)
+
+    leaves = []
+    for name, count in lf.counts.most_common():
+        entry: dict = {"op": name, "count": count}
+        if name in lf.inductor_kept:
+            entry["inductor_kept"] = True
+        if name in lf.untraceable:
+            entry["untraceable"] = True
+        if name in lf.dtensor_uncovered:
+            entry["dtensor_uncovered"] = True
+        leaves.append(entry)
+
+    return {
+        "op": root_name,
+        "decomp_type": node.classification.decomp_type,
+        "leaves": leaves,
+        "total_instances": sum(lf.counts.values()),
+    }
+
+
+def enrich_leaves_with_dispatch(d: dict, node: DecompNode) -> dict:
+    """Add dispatch info to leaves JSON output."""
+    leaf_dispatch: dict[str, DispatchInfo] = {}
+
+    def walk(n: DecompNode):
+        if not n.children:
+            name = op_display_name(n.op)
+            if name not in leaf_dispatch:
+                leaf_dispatch[name] = get_dispatch_info_cached(n.op)
+            return
+        for c in n.children:
+            walk(c)
+
+    walk(node)
+
+    for leaf in d.get("leaves", []):
+        dinfo = leaf_dispatch.get(leaf["op"])
+        if dinfo:
+            leaf["autograd_type"] = dinfo.autograd_type
+            leaf["has_adiov"] = dinfo.has_adiov
+            leaf["mode_sensitive"] = dinfo.mode_sensitive
+    return d
+
+
+def enrich_tree_with_dispatch(d: dict, node: DecompNode) -> None:
+    """Add dispatch info to tree JSON output (in-place)."""
+    dinfo = get_dispatch_info_cached(node.op)
+    d["autograd_type"] = dinfo.autograd_type
+    d["has_adiov"] = dinfo.has_adiov
+    d["mode_sensitive"] = dinfo.mode_sensitive
+    for child_dict, child_node in zip(d.get("children", []), node.children):
+        enrich_tree_with_dispatch(child_dict, child_node)
+
+
+def add_untraceable_warnings(d: dict, node: DecompNode) -> None:
+    """Add a warnings field to a JSON dict if the tree has untraceable ops."""
+    errors = collect_untraceable_errors(node)
+    if errors:
+        d["warnings"] = [
+            {"op": name, "message": f"could not trace: {error}"}
+            for name, error in errors
+        ]

@@ -5,13 +5,25 @@ import json
 import pytest
 import torch
 
-from decomp_magician.__main__ import (
-    main, format_tree, format_leaves, format_summary, tree_to_dict,
-    _leaves_to_dict, _warn_untraceable, _add_untraceable_warnings,
-    _collect_untraceable_errors,
+from decomp_magician.cli import main
+from decomp_magician.export import add_untraceable_warnings, leaves_to_dict, tree_to_dict
+from decomp_magician.format import (
+    FormatConfig,
+    format_leaves,
+    format_summary,
+    format_tree,
+    format_untraceable_warning,
 )
-from decomp_magician.tree import build_tree, DecompNode
+from decomp_magician.tree import (
+    DecompNode,
+    build_tree,
+    collect_untraceable_errors,
+)
 from decomp_magician.classify import OpClass
+
+# No-color config for tests (no tty)
+_CFG = FormatConfig()
+_COLOR_CFG = FormatConfig(color=True)
 
 
 class TestMain:
@@ -53,7 +65,6 @@ class TestMain:
     def test_compile_flag(self, capsys):
         assert main(["_native_batch_norm_legit", "--compile"]) == 0
         out = capsys.readouterr().out
-        # In compile mode, inductor-kept ops are leaves — they should appear
         assert "inductor-kept" in out
 
     def test_conflicting_flags(self, capsys):
@@ -86,17 +97,14 @@ class TestDispatchFlags:
     def test_dispatch_table_flag(self, capsys):
         assert main(["addcmul", "--dispatch-table", "--depth", "0"]) == 0
         out = capsys.readouterr().out
-        # addcmul has an autograd kernel → AG:redispatch
         assert "AG:" in out
 
     def test_mode_sensitivity_flag(self, capsys):
         assert main(["addcmul", "--mode-sensitivity", "--depth", "0"]) == 0
         out = capsys.readouterr().out
-        # addcmul has autograd kernel → mode-sensitive
         assert "mode-sensitive" in out or "mode-invariant" in out
 
     def test_dispatch_table_leaves_json(self, capsys):
-        """--dispatch-table with --leaves --json should add dispatch fields."""
         assert main(["addcmul", "--dispatch-table", "--leaves", "--json"]) == 0
         data = json.loads(capsys.readouterr().out)
         for leaf in data["leaves"]:
@@ -109,7 +117,6 @@ class TestPurityFlag:
         assert main(["addcmul", "--pure", "--no-color"]) == 0
         out = capsys.readouterr().out
         assert "PURE" in out or "IMPURE" in out
-        # Should say how many leaf ops
         assert "leaf" in out.lower()
 
     def test_pure_json_structure(self, capsys):
@@ -122,7 +129,6 @@ class TestPurityFlag:
         assert isinstance(data["mode_sensitive_leaves"], list)
 
     def test_mutable_op_is_impure(self, capsys):
-        """batch_norm has copy_ (mutable) → must be IMPURE."""
         assert main(["_native_batch_norm_legit", "--pure", "--json"]) == 0
         data = json.loads(capsys.readouterr().out)
         assert data["pure"] is False
@@ -133,14 +139,11 @@ class TestPurityFlag:
 
 class TestADIOVFlag:
     def test_adiov_has_paths(self, capsys):
-        """addcmul decomposes through expand (ADIOV=True) → has ADIOV paths."""
         assert main(["addcmul", "--adiov", "--no-color"]) == 0
         out = capsys.readouterr().out
-        # Filtered tree should contain expand (the ADIOV-bearing leaf)
         assert "expand" in out
 
     def test_adiov_no_paths(self, capsys):
-        """sigmoid decomposes to prims ops with no ADIOV → no ADIOV paths."""
         assert main(["sigmoid", "--adiov", "--no-color"]) == 0
         out = capsys.readouterr().out
         assert "NO ADIOV PATHS" in out
@@ -154,21 +157,13 @@ class TestADIOVFlag:
     def test_adiov_has_paths_json(self, capsys):
         assert main(["addcmul", "--adiov", "--json"]) == 0
         data = json.loads(capsys.readouterr().out)
-        # Should be a tree dict (has children), not the no-paths message
         assert "op" in data
         assert "children" in data or "adiov_paths" not in data
 
 
 class TestModelFlag:
-    """Tests for --model analysis mode.
-
-    Creates a trivially exported model (relu + add) to test the full
-    model analysis path: load → walk graph → format output.
-    """
-
     @pytest.fixture
     def tiny_model_path(self, tmp_path):
-        """Export a trivial model: relu(x) + 1.0"""
         import warnings
 
         class TinyModel(torch.nn.Module):
@@ -187,7 +182,6 @@ class TestModelFlag:
         out = capsys.readouterr().out
         assert "Model analysis" in out
         assert "Unique ops:" in out
-        # The model contains relu and add.Tensor
         assert "relu" in out
         assert "add" in out
 
@@ -201,7 +195,6 @@ class TestModelFlag:
         assert any("add" in n for n in op_names)
 
     def test_model_target_opset(self, tiny_model_path, capsys):
-        """--model --target-opset should decompose then list final ops."""
         assert main(["--model", tiny_model_path, "--target-opset", "core_aten", "--no-color"]) == 0
         out = capsys.readouterr().out
         assert "core_aten" in out
@@ -218,20 +211,17 @@ class TestModelFlag:
         assert "not found" in capsys.readouterr().err.lower()
 
     def test_model_without_opset_shows_decomposable(self, tiny_model_path, capsys):
-        """Without --target-opset, model mode should show [decomposable] or [leaf]."""
         assert main(["--model", tiny_model_path, "--no-color"]) == 0
         out = capsys.readouterr().out
         assert "[decomposable]" in out or "[leaf]" in out
 
     def test_model_dtensor_text(self, tiny_model_path, capsys):
-        """--model --dtensor should show per-op DTensor coverage and verdict."""
         assert main(["--model", tiny_model_path, "--dtensor", "--no-color"]) == 0
         out = capsys.readouterr().out
         assert "dtensor:" in out
         assert "all ops covered" in out
 
     def test_model_dtensor_json(self, tiny_model_path, capsys):
-        """--model --dtensor --json should include dtensor fields."""
         assert main(["--model", tiny_model_path, "--dtensor", "--json"]) == 0
         data = json.loads(capsys.readouterr().out)
         assert "dtensor_covered" in data
@@ -245,45 +235,45 @@ class TestFormatTree:
     def test_leaf_format(self):
         op = torch.ops.aten.mm.default
         node = build_tree(op)
-        output = format_tree(node)
+        output = format_tree(node, _CFG)
         assert "aten.mm" in output
         assert "[leaf]" in output
 
     def test_tree_has_connectors(self):
         op = torch.ops.aten.addcmul.default
         node = build_tree(op, depth=1)
-        output = format_tree(node)
+        output = format_tree(node, _CFG)
         assert "├──" in output or "└──" in output
 
     def test_count_shown(self):
         op = torch.ops.aten.addcmul.default
         node = build_tree(op, depth=1)
-        output = format_tree(node)
-        assert "x2" in output  # mul.Tensor appears twice
+        output = format_tree(node, _CFG)
+        assert "x2" in output
 
     def test_batch_norm_squeeze_visible(self):
         op = torch.ops.aten._native_batch_norm_legit.default
         node = build_tree(op, depth=1)
-        output = format_tree(node)
+        output = format_tree(node, _CFG)
         assert "squeeze.dims" in output
         assert "x3" in output
 
     def test_inductor_kept_annotation(self, inductor_kept_op):
         node = build_tree(inductor_kept_op, depth=0)
-        output = format_tree(node)
+        output = format_tree(node, _CFG)
         assert "inductor-kept" in output
 
 
 class TestSummary:
     def test_leaf_summary(self):
         node = build_tree(torch.ops.aten.mm.default)
-        s = format_summary(node)
+        s = format_summary(node, _CFG)
         assert "1 op" in s
         assert "1 leaf" in s
 
     def test_batch_norm_summary(self):
         node = build_tree(torch.ops.aten._native_batch_norm_legit.default, depth=1)
-        s = format_summary(node)
+        s = format_summary(node, _CFG)
         assert "9 ops" in s
         assert "inductor-kept" in s
 
@@ -293,18 +283,15 @@ class TestSummary:
         assert "1 op" in captured.out
 
     def test_untraceable_unique_count(self):
-        """Summary should count unique untraceable ops, not nodes."""
         op = torch.ops.aten.mul.Tensor
         cls_table = OpClass(decomp_type="table")
         cls_leaf = OpClass(decomp_type="leaf")
-        # Same op appearing as untraceable 3 times
         bad = DecompNode(op=op, classification=cls_leaf, traceable=False, error="fail")
         root = DecompNode(op=op, children=(bad, bad, bad), classification=cls_table)
-        s = format_summary(root)
+        s = format_summary(root, _CFG)
         assert "1 untraceable op (3 nodes)" in s
 
     def test_untraceable_no_parens_when_no_duplication(self):
-        """When each untraceable node is a different op, no parenthetical."""
         op1 = torch.ops.aten.mul.Tensor
         op2 = torch.ops.aten.add.Tensor
         cls_table = OpClass(decomp_type="table")
@@ -312,20 +299,17 @@ class TestSummary:
         bad1 = DecompNode(op=op1, classification=cls_leaf, traceable=False, error="fail")
         bad2 = DecompNode(op=op2, classification=cls_leaf, traceable=False, error="fail")
         root = DecompNode(op=op1, children=(bad1, bad2), classification=cls_table)
-        s = format_summary(root)
+        s = format_summary(root, _CFG)
         assert "2 untraceable" in s
         assert "nodes" not in s
 
     def test_no_untraceable_in_summary(self):
-        """Fully traceable tree should not mention untraceable."""
         node = build_tree(torch.ops.aten.addcmul.default, depth=1)
-        s = format_summary(node)
+        s = format_summary(node, _CFG)
         assert "untraceable" not in s
 
 
 class TestUntraceableWarnings:
-    """Tests for _warn_untraceable (stderr) and _add_untraceable_warnings (JSON)."""
-
     def _make_tree_with_untraceable(self):
         op = torch.ops.aten.mul.Tensor
         cls_table = OpClass(decomp_type="table")
@@ -342,47 +326,44 @@ class TestUntraceableWarnings:
         return DecompNode(op=op, children=(child,), classification=cls_table)
 
     def test_collect_errors_finds_untraceable(self):
-        errors = _collect_untraceable_errors(self._make_tree_with_untraceable())
+        errors = collect_untraceable_errors(self._make_tree_with_untraceable())
         assert len(errors) == 1
         assert errors[0][1] == "test error"
 
     def test_collect_errors_empty_for_clean_tree(self):
-        errors = _collect_untraceable_errors(self._make_clean_tree())
+        errors = collect_untraceable_errors(self._make_clean_tree())
         assert len(errors) == 0
 
     def test_collect_errors_deduplicates(self):
-        """Same op untraceable twice should appear once."""
         op = torch.ops.aten.mul.Tensor
         cls_table = OpClass(decomp_type="table")
         cls_leaf = OpClass(decomp_type="leaf")
         bad1 = DecompNode(op=op, classification=cls_leaf, traceable=False, error="err")
         bad2 = DecompNode(op=op, classification=cls_leaf, traceable=False, error="err")
         root = DecompNode(op=op, children=(bad1, bad2), classification=cls_table)
-        errors = _collect_untraceable_errors(root)
+        errors = collect_untraceable_errors(root)
         assert len(errors) == 1
 
-    def test_warn_untraceable_prints_stderr(self, capsys):
-        _warn_untraceable(self._make_tree_with_untraceable())
-        err = capsys.readouterr().err
-        assert "warning" in err
-        assert "1 op" in err
-        assert "test error" in err
+    def test_warn_untraceable_returns_warning(self):
+        warning = format_untraceable_warning(self._make_tree_with_untraceable(), _CFG)
+        assert "warning" in warning
+        assert "1 op" in warning
+        assert "test error" in warning
 
-    def test_warn_untraceable_silent_for_clean_tree(self, capsys):
-        _warn_untraceable(self._make_clean_tree())
-        err = capsys.readouterr().err
-        assert err == ""
+    def test_warn_untraceable_empty_for_clean_tree(self):
+        warning = format_untraceable_warning(self._make_clean_tree(), _CFG)
+        assert warning == ""
 
     def test_add_warnings_to_json(self):
         d = {}
-        _add_untraceable_warnings(d, self._make_tree_with_untraceable())
+        add_untraceable_warnings(d, self._make_tree_with_untraceable())
         assert "warnings" in d
         assert len(d["warnings"]) == 1
         assert "could not trace" in d["warnings"][0]["message"]
 
     def test_no_warnings_in_json_for_clean_tree(self):
         d = {}
-        _add_untraceable_warnings(d, self._make_clean_tree())
+        add_untraceable_warnings(d, self._make_clean_tree())
         assert "warnings" not in d
 
 
@@ -396,9 +377,8 @@ class TestLeaves:
 
     def test_leaves_propagated_counts(self):
         node = build_tree(torch.ops.aten.addcmul.default)
-        output = format_leaves(node)
+        output = format_leaves(node, _CFG)
         assert "prims.mul.default" in output
-        # addcmul = mul(self, mul(t1, t2)) + ... so prims.mul should appear > 2x
         assert "x3" in output or "x4" in output or "x5" in output
 
     def test_leaves_with_compile(self, capsys):
@@ -408,14 +388,13 @@ class TestLeaves:
 
     def test_leaf_op_leaves(self):
         node = build_tree(torch.ops.aten.mm.default)
-        output = format_leaves(node)
+        output = format_leaves(node, _CFG)
         assert "aten.mm.default" in output
         assert "no decomposition" in output
 
     def test_leaves_untraceable_warning(self):
-        """Untraceable ops in frontier should trigger a warning."""
         node = build_tree(torch.ops.aten.roll.default)
-        output = format_leaves(node)
+        output = format_leaves(node, _CFG)
         assert "untraceable" in output
         assert "incomplete" in output
 
@@ -430,33 +409,25 @@ class TestLeaves:
 
 class TestColor:
     def test_no_color_in_pipe(self, capsys):
-        """Non-tty output should have no ANSI codes."""
         main(["addcmul", "--depth", "1"])
         captured = capsys.readouterr()
         assert "\033[" not in captured.out
 
     def test_no_color_flag(self, capsys):
-        """--no-color should suppress ANSI codes even if tty."""
         main(["addcmul", "--depth", "1", "--no-color"])
         captured = capsys.readouterr()
         assert "\033[" not in captured.out
 
     def test_color_rendering(self):
-        """When color is on, output should contain ANSI codes."""
-        import decomp_magician.__main__ as m
-        m._use_color = True
         node = build_tree(torch.ops.aten.addcmul.default, depth=1)
-        output = format_tree(node)
-        assert "\033[" in output  # has ANSI codes
-        assert "\033[1m" in output  # bold for decomposable ops
+        output = format_tree(node, _COLOR_CFG)
+        assert "\033[" in output
+        assert "\033[1m" in output  # bold
         assert "\033[33m" in output  # yellow for inductor-kept
 
     def test_color_leaf_dim(self):
-        """Leaf ops should be dim when color is on."""
-        import decomp_magician.__main__ as m
-        m._use_color = True
         node = build_tree(torch.ops.aten.mm.default)
-        output = format_tree(node)
+        output = format_tree(node, _COLOR_CFG)
         assert "\033[2m" in output  # dim for leaf
 
 
@@ -502,11 +473,8 @@ class TestJson:
 
 
 class TestDtensorAncestorCoverage:
-    """DTensor MISSING should only appear when no ancestor has a registered strategy."""
-
     def _make_node(self, strategy, children=()):
-        """Build a synthetic DecompNode with a given dtensor_strategy."""
-        op = torch.ops.aten.mul.Tensor  # placeholder op
+        op = torch.ops.aten.mul.Tensor
         cls = OpClass(
             decomp_type="leaf" if not children else "table",
             dtensor_strategy=strategy,
@@ -517,92 +485,75 @@ class TestDtensorAncestorCoverage:
         )
 
     def test_missing_suppressed_when_ancestor_registered(self):
-        """A 'missing' leaf below a 'registered' parent should show 'via ancestor', not MISSING."""
         leaf = self._make_node("missing")
         parent = self._make_node("registered", children=[leaf])
-        output = format_tree(parent)
+        output = format_tree(parent, _CFG)
         assert "MISSING" not in output
         assert "via ancestor" in output
 
     def test_missing_shown_when_no_ancestor_registered(self):
-        """A 'missing' leaf with no registered ancestor SHOULD show MISSING."""
         leaf = self._make_node("missing")
         parent = self._make_node("decomp-fallback", children=[leaf])
-        output = format_tree(parent)
+        output = format_tree(parent, _CFG)
         assert "MISSING" in output
 
     def test_decomp_fallback_does_not_cover(self):
-        """decomp-fallback runs the decomposition — children are still reached."""
         leaf = self._make_node("missing")
         mid = self._make_node("decomp-fallback", children=[leaf])
         root = self._make_node("decomp-fallback", children=[mid])
-        output = format_tree(root)
+        output = format_tree(root, _CFG)
         assert "MISSING" in output
 
     def test_registered_covers_deep_descendants(self):
-        """A registered ancestor covers all descendants, not just direct children."""
         deep_leaf = self._make_node("missing")
         mid = self._make_node("missing", children=[deep_leaf])
         root = self._make_node("registered", children=[mid])
-        output = format_tree(root)
+        output = format_tree(root, _CFG)
         assert "MISSING" not in output
 
     def test_summary_covered_verdict(self):
-        """Fully covered tree should show 'dtensor: covered' in summary."""
         leaf = self._make_node("missing")
         parent = self._make_node("registered", children=[leaf])
-        summary = format_summary(parent)
+        summary = format_summary(parent, _CFG)
         assert "dtensor: covered" in summary
 
     def test_summary_uncovered_verdict(self):
-        """Uncovered tree should show 'dtensor: N uncovered' in summary."""
         leaf = self._make_node("missing")
         parent = self._make_node("decomp-fallback", children=[leaf])
-        summary = format_summary(parent)
+        summary = format_summary(parent, _CFG)
         assert "1 uncovered" in summary
 
     def test_summary_no_verdict_without_dtensor(self):
-        """When dtensor_strategy is None, summary should not mention dtensor."""
         leaf = self._make_node(None)
         parent = self._make_node(None, children=[leaf])
-        summary = format_summary(parent)
+        summary = format_summary(parent, _CFG)
         assert "dtensor" not in summary
 
     def test_leaves_shows_uncovered(self):
-        """format_leaves should tag uncovered leaves with dtensor: MISSING."""
         leaf = self._make_node("missing")
         parent = self._make_node("decomp-fallback", children=[leaf])
-        output = format_leaves(parent)
+        output = format_leaves(parent, _CFG)
         assert "MISSING" in output
 
     def test_leaves_hides_covered(self):
-        """format_leaves should not tag covered leaves."""
         leaf = self._make_node("missing")
         parent = self._make_node("registered", children=[leaf])
-        output = format_leaves(parent)
+        output = format_leaves(parent, _CFG)
         assert "MISSING" not in output
 
     def test_json_leaves_uncovered_flag(self):
-        """JSON leaves output should include dtensor_uncovered for gap ops."""
         leaf = self._make_node("missing")
         parent = self._make_node("decomp-fallback", children=[leaf])
-        d = _leaves_to_dict(parent)
+        d = leaves_to_dict(parent)
         assert any(entry.get("dtensor_uncovered") for entry in d["leaves"])
 
     def test_json_leaves_no_flag_when_covered(self):
-        """JSON leaves output should not include dtensor_uncovered when covered."""
         leaf = self._make_node("missing")
         parent = self._make_node("registered", children=[leaf])
-        d = _leaves_to_dict(parent)
+        d = leaves_to_dict(parent)
         assert not any(entry.get("dtensor_uncovered") for entry in d["leaves"])
 
     def test_cli_dtensor_decomposable_root_not_missing(self, capsys):
-        """A decomposable op's root should never show dtensor: MISSING.
-
-        Whether an op decomposes via table or CIA, DTensor handles its
-        children via fallback — so the root itself is never 'missing'.
-        Uses softmax as a stable decomposable op across PyTorch versions.
-        """
         assert main(["softmax", "--dtensor", "--no-color"]) == 0
         out = capsys.readouterr().out
         first_line = out.strip().split("\n")[0]

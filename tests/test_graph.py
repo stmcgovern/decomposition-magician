@@ -2,9 +2,9 @@
 
 import torch
 
-from decomp_magician.graph import format_mermaid, format_dot, _COLORS
+from decomp_magician.export import format_mermaid, format_dot, _COLORS
 from decomp_magician.tree import build_tree
-from decomp_magician.__main__ import main
+from decomp_magician.cli import main
 
 
 class TestMermaid:

@@ -3,7 +3,7 @@
 import json
 
 from decomp_magician.reverse import ReverseEntry, reverse_lookup
-from decomp_magician.__main__ import main
+from decomp_magician.cli import main
 
 
 class TestReverseLookup:

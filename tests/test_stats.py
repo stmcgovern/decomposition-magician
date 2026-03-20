@@ -6,7 +6,7 @@ from collections import Counter
 import pytest
 
 from decomp_magician.stats import DtensorStats, StatsResult, compute_stats
-from decomp_magician.__main__ import main
+from decomp_magician.cli import main
 
 
 @pytest.fixture(scope="module")
