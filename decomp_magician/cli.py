@@ -32,6 +32,7 @@ from decomp_magician.format import (
     format_opset,
     format_purity,
     format_reverse,
+    format_source,
     format_stats,
     format_summary,
     format_tree,
@@ -47,6 +48,7 @@ from decomp_magician.tree import (
     analyze_purity,
     build_tree,
     filter_adiov_paths,
+    get_decomp_source,
     op_display_name,
     trace_backward,
 )
@@ -167,6 +169,8 @@ def _build_parser(pkg_version):
                         help="Check if decomposition is pure (no mutable or ADIOV leaves)")
     parser.add_argument("--backward", action="store_true",
                         help="Show ops dispatched during the backward pass")
+    parser.add_argument("--source", action="store_true",
+                        help="Show the decomposition function source code")
     return parser
 
 
@@ -257,6 +261,14 @@ def _run_tree(op, resolved_name: str, args, cfg: FormatConfig) -> int:
             if cfg.show_dispatch or cfg.show_mode_sensitivity:
                 enrich_tree_with_dispatch(d, node)
         add_untraceable_warnings(d, node)
+        if args.source:
+            src = get_decomp_source(op, compile=args.compile)
+            if src is not None:
+                d["source"] = {
+                    "file": src.file,
+                    "line": src.line,
+                    "code": src.source,
+                }
         print(json.dumps(d, indent=2))
         return 0
 
@@ -288,6 +300,14 @@ def _run_tree(op, resolved_name: str, args, cfg: FormatConfig) -> int:
         if args.verbose:
             print()
             print(format_verbose(node, cfg))
+
+    if args.source:
+        src = get_decomp_source(op, compile=args.compile)
+        if src is not None:
+            print()
+            print(format_source(src, cfg, root_op=resolved_name))
+        else:
+            print(f"\n  No decomposition source available for {resolved_name}")
 
     _warn_untraceable(node, cfg)
     return 0

@@ -5,8 +5,8 @@ import torch
 
 from decomp_magician.classify import OpClass
 from decomp_magician.tree import (
-    DecompNode, build_tree, collect_leaf_counts,
-    _trace_decomp, _make_meta_args,
+    DecompNode, DecompSource, build_tree, collect_leaf_counts,
+    get_decomp_source, _trace_decomp, _make_meta_args,
 )
 
 
@@ -309,3 +309,45 @@ class TestClassifyCache:
         cls = classify(op)
         assert isinstance(cls, OpClass)
         assert cls.decomp_type in ("table", "both")
+
+
+class TestDecompSource:
+    def test_table_op_has_source(self):
+        """Table decomposition ops should have retrievable source."""
+        op = torch.ops.aten.addcmul.default
+        src = get_decomp_source(op)
+        assert src is not None
+        assert isinstance(src, DecompSource)
+        assert "addcmul" in src.op
+        assert "def addcmul" in src.source
+        assert src.line > 0
+        assert src.file
+
+    def test_leaf_op_no_source(self):
+        """Leaf ops have no decomposition — source should be None."""
+        op = torch.ops.aten.mm.default
+        src = get_decomp_source(op)
+        assert src is None
+
+    def test_cia_walks_to_child_source(self):
+        """CIA ops with C++ kernels should find source from their first child."""
+        op = torch.ops.aten.batch_norm.default
+        src = get_decomp_source(op)
+        assert src is not None
+        # Source comes from a child, not the root op
+        assert src.op != "aten.batch_norm.default"
+        assert "batch_norm" in src.source
+
+    def test_source_location_property(self):
+        op = torch.ops.aten.addcmul.default
+        src = get_decomp_source(op)
+        assert src is not None
+        assert src.location == f"{src.file}:{src.line}"
+
+    def test_source_path_shortened(self):
+        """Source file path should be shortened (not an absolute system path)."""
+        op = torch.ops.aten.addcmul.default
+        src = get_decomp_source(op)
+        assert src is not None
+        assert "torch/" in src.file
+        assert not src.file.startswith("/")

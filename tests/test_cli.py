@@ -472,6 +472,47 @@ class TestJson:
         assert mul_children[0]["count"] == 2
 
 
+class TestSourceFlag:
+    def test_source_text(self, capsys):
+        assert main(["addcmul", "--source", "--no-color"]) == 0
+        out = capsys.readouterr().out
+        assert "Source:" in out
+        assert "def addcmul" in out
+
+    def test_source_json(self, capsys):
+        assert main(["addcmul", "--source", "--json"]) == 0
+        data = json.loads(capsys.readouterr().out)
+        assert "source" in data
+        assert "file" in data["source"]
+        assert "line" in data["source"]
+        assert "def addcmul" in data["source"]["code"]
+
+    def test_source_leaf_op(self, capsys):
+        """Leaf ops have no decomposition source."""
+        assert main(["mm", "--source", "--no-color"]) == 0
+        out = capsys.readouterr().out
+        assert "No decomposition source" in out
+
+    def test_source_json_leaf_no_source(self, capsys):
+        """JSON output for leaf ops should not include source field."""
+        assert main(["mm", "--source", "--json"]) == 0
+        data = json.loads(capsys.readouterr().out)
+        assert "source" not in data
+
+    def test_source_with_leaves(self, capsys):
+        """--source should work with --leaves."""
+        assert main(["addcmul", "--leaves", "--source", "--no-color"]) == 0
+        out = capsys.readouterr().out
+        assert "Source:" in out
+
+    def test_source_cia_shows_child(self, capsys):
+        """CIA ops with C++ kernels should show first child's source."""
+        assert main(["batch_norm", "--source", "--no-color"]) == 0
+        out = capsys.readouterr().out
+        assert "Source:" in out
+        assert "via" in out
+
+
 class TestDtensorAncestorCoverage:
     _DT_CFG = FormatConfig(show_dtensor=True)
 

@@ -21,6 +21,7 @@ from decomp_magician.classify import (
 from decomp_magician.dispatch import format_dispatch_short, get_dispatch_info_cached
 from decomp_magician.tree import (
     DecompNode,
+    DecompSource,
     PurityResult,
     collect_leaf_frontier,
     collect_untraceable_errors,
@@ -541,6 +542,25 @@ def format_backward(name: str, op_counts: Counter[str], cfg: FormatConfig) -> st
             lines.append(f"  {child_name:<{name_width}}{count_str}")
         total = sum(op_counts.values())
         lines.append(f"\n{len(op_counts)} unique ops, {total} total instances")
+    return "\n".join(lines)
+
+
+def format_source(
+    src: DecompSource, cfg: FormatConfig, root_op: str | None = None,
+) -> str:
+    """Format the decomposition function source code.
+
+    If root_op is set and differs from src.op, indicates the source
+    is from a child op (e.g. batch_norm showing native_batch_norm's source).
+    """
+    header = f"Source: {src.location}"
+    if root_op and root_op != src.op:
+        header += f"  (via {src.op})"
+    lines = [
+        _c(cfg, _DIM, header),
+        "",
+        src.source.rstrip(),
+    ]
     return "\n".join(lines)
 
 

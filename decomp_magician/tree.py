@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import inspect
 from collections import Counter
 from dataclasses import dataclass, replace
 from typing import NamedTuple
@@ -122,6 +123,114 @@ def _get_inductor_table() -> dict:
         _inductor_table_cache = dict(decomposition_table)
 
     return _inductor_table_cache
+
+
+@dataclass(frozen=True)
+class DecompSource:
+    """Source code and location of a decomposition function."""
+    op: str
+    file: str
+    line: int
+    source: str
+
+    @property
+    def location(self) -> str:
+        return f"{self.file}:{self.line}"
+
+
+def _shorten_torch_path(filepath: str) -> str:
+    """Shorten an absolute path to be relative to the torch package root.
+
+    e.g. /usr/lib/python3.10/site-packages/torch/_decomp/decompositions.py
+      → torch/_decomp/decompositions.py
+    """
+    import os.path
+    torch_root = os.path.dirname(torch.__file__)  # .../torch
+    pkg_root = os.path.dirname(torch_root)         # .../site-packages or dev root
+    try:
+        return os.path.relpath(filepath, pkg_root)
+    except ValueError:
+        # Different drives on Windows
+        return filepath
+
+
+def _get_decomp_source_fn(op: OpOverload, compile: bool = False):
+    """Get the inspectable decomposition function for source display.
+
+    Unlike _get_decomp_fn, this skips the op.decompose trampoline for CIA ops
+    and instead looks for a Python kernel in py_kernels. Returns None for C++
+    CIA kernels (which have no Python source to inspect).
+    """
+    if compile:
+        table = _get_inductor_table()
+        return table.get(op)
+
+    from torch._decomp import decomposition_table
+
+    if op in decomposition_table:
+        return decomposition_table[op]
+
+    # CIA op — check for Python kernel
+    if op._can_decompose():
+        dk = torch._C.DispatchKey.CompositeImplicitAutograd
+        if dk in getattr(op, 'py_kernels', {}):
+            return op.py_kernels[dk]
+        # C++ CIA kernel — no Python source available
+        return None
+
+    return None
+
+
+def _inspect_decomp_fn(op: OpOverload, decomp_fn) -> DecompSource | None:
+    """Try to extract source from a decomposition function."""
+    try:
+        source = inspect.getsource(decomp_fn)
+        source_file = inspect.getfile(decomp_fn)
+        _, line = inspect.getsourcelines(decomp_fn)
+    except (OSError, TypeError):
+        return None
+
+    return DecompSource(
+        op=op_display_name(op),
+        file=_shorten_torch_path(source_file),
+        line=line,
+        source=source,
+    )
+
+
+def get_decomp_source(
+    op: OpOverload, compile: bool = False,
+) -> DecompSource | None:
+    """Get the source code of the decomposition function for an op.
+
+    Returns None if the op has no decomposition or the source can't be retrieved.
+    For CIA ops with C++ kernels (e.g. batch_norm), walks the decomposition tree
+    to find the first child with Python source — this is usually where the real
+    logic lives (e.g. native_batch_norm).
+    """
+    decomp_fn = _get_decomp_source_fn(op, compile=compile)
+    if decomp_fn is not None:
+        return _inspect_decomp_fn(op, decomp_fn)
+
+    # No direct Python source — walk children to find the first one that has it.
+    # This handles CIA ops like batch_norm → native_batch_norm.
+    result = _trace_decomp(op, compile=compile)
+    if isinstance(result, str):
+        return None
+
+    seen = set()
+    for child_op in result:
+        child_name = child_op.name()
+        if child_name in seen:
+            continue
+        seen.add(child_name)
+        child_fn = _get_decomp_source_fn(child_op, compile=compile)
+        if child_fn is not None:
+            src = _inspect_decomp_fn(child_op, child_fn)
+            if src is not None:
+                return src
+
+    return None
 
 
 def _make_meta_args(
