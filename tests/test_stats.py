@@ -45,8 +45,11 @@ class TestComputeStats:
         depths = [d for _, d in stats_full.deepest]
         assert depths == sorted(depths, reverse=True)
 
-    def test_compile_mode_different(self, stats_full, stats_compile):
-        assert stats_compile.untraceable <= stats_full.untraceable
+    def test_compile_mode_uses_inductor_table(self, stats_full, stats_compile):
+        """Compile mode uses the inductor decomposition table, which covers
+        different ops than the standard table. The traceable counts differ."""
+        assert stats_compile.traceable != stats_full.traceable or \
+               stats_compile.untraceable != stats_full.untraceable
 
     def test_accounting_invariant(self, stats_full):
         """traceable + untraceable + classify_errors == total_non_out."""

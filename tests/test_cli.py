@@ -139,9 +139,9 @@ class TestPurityFlag:
 
 class TestADIOVFlag:
     def test_adiov_has_paths(self, capsys):
-        assert main(["addcmul", "--adiov", "--no-color"]) == 0
+        assert main(["_native_batch_norm_legit", "--adiov", "--no-color"]) == 0
         out = capsys.readouterr().out
-        assert "expand" in out
+        assert "copy_" in out
 
     def test_adiov_no_paths(self, capsys):
         assert main(["sigmoid", "--adiov", "--no-color"]) == 0
@@ -155,10 +155,10 @@ class TestADIOVFlag:
         assert "no ADIOV" in data["message"]
 
     def test_adiov_has_paths_json(self, capsys):
-        assert main(["addcmul", "--adiov", "--json"]) == 0
+        assert main(["_native_batch_norm_legit", "--adiov", "--json"]) == 0
         data = json.loads(capsys.readouterr().out)
         assert "op" in data
-        assert "children" in data or "adiov_paths" not in data
+        assert "children" in data
 
 
 class TestModelFlag:

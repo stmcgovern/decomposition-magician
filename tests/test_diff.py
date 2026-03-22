@@ -86,8 +86,8 @@ class TestComputeDiff:
         assert len(diff.added) > 0 or len(diff.removed) > 0 or len(diff.changed) > 0
 
     def test_leaf_op_no_diff(self):
-        """A leaf op should have no differences."""
-        op = torch.ops.aten.add.Tensor
+        """A true leaf op (no decomposition in any table) has no differences."""
+        op = torch.ops.aten.mm.default
         diff = compute_diff(op)
         assert not diff.added
         assert not diff.removed
