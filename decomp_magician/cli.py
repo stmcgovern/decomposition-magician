@@ -138,7 +138,7 @@ def _build_parser(pkg_version):
     parser.add_argument("--dtensor", action="store_true",
                         help="Show DTensor sharding strategy coverage")
     parser.add_argument("--compile", action="store_true",
-                        help="Show what torch.compile produces")
+                        help="Use the inductor decomposition table (what torch.compile decomposes)")
     parser.add_argument("--leaves", action="store_true",
                         help="Show flat leaf frontier with propagated counts")
     parser.add_argument("--reverse", action="store_true",
