@@ -25,7 +25,7 @@ aten.softmax.int  [CIA]
 16 ops (8 table, 7 leaf, 1 CIA) · 6 inductor-kept
 ```
 
-The tool traces decompositions on meta tensors using `make_fx`, then classifies each op against PyTorch's decomposition table, inductor table, and dispatch system. It works with whatever PyTorch version you have installed.
+Traces decompositions on meta tensors, then classifies each op against PyTorch's decomposition table, inductor table, and dispatch system. Works with whatever PyTorch version you have installed.
 
 ## Install
 
@@ -38,7 +38,7 @@ Requires Python 3.10+ and PyTorch 2.0+.
 ## What does torch.compile actually run?
 
 ```
-$ decomp-magician batch_norm --compile --leaves
+$ decomp-magician _native_batch_norm_legit --compile --leaves
 
 aten._native_batch_norm_legit.default decomposes to:
   aten.mul.Tensor           x7  [inductor-kept]
@@ -62,7 +62,81 @@ aten._native_batch_norm_legit.default decomposes to:
 | `[CIA]` | CompositeImplicitAutograd kernel |
 | `[both]` | Both table and CIA |
 | `[leaf]` | No decomposition — terminal op |
-| `inductor-kept` | Inductor uses a direct lowering instead of decomposing |
+| `inductor-kept` | In the decomposition table but not decomposed by Inductor |
+
+## DTensor strategy coverage
+
+`--dtensor` shows which ops in the decomposition chain have DTensor sharding strategies — distinguishing `registered` (explicit strategy) from `decomp-fallback` (derives strategy by decomposing into ops that have strategies):
+
+```
+$ decomp-magician _native_batch_norm_legit --dtensor --depth 1
+
+aten._native_batch_norm_legit.default  [table, mutable]  dtensor: decomp-fallback
+├── aten.var_mean.correction  [table, inductor-kept]  dtensor: registered
+├── aten.add.Tensor  [table]  dtensor: registered  x4
+├── aten.rsqrt.default  [table, inductor-kept]  dtensor: registered
+├── aten.sub.Tensor  [table, inductor-kept]  dtensor: registered
+├── aten.mul.Tensor  [table, inductor-kept]  dtensor: registered  x7
+├── aten.squeeze.dims  [table, inductor-kept]  dtensor: registered  x3
+├── aten.copy_.default  [leaf, mutable]  dtensor: registered  x2
+└── aten.unsqueeze.default  [table, inductor-kept]  dtensor: registered  x4
+
+9 ops (8 table, 1 leaf) · 6 inductor-kept · dtensor: no gaps
+```
+
+If any op in the chain lacks a strategy, `DecompShardingStrategy` cannot produce a sharding plan for the whole op. `--stats --dtensor` shows coverage across all ops.
+
+## Graph export
+
+`--mermaid` produces a diagram that renders directly on GitHub:
+
+```mermaid
+graph TD
+    n0([aten.softmax.int])
+    n1([aten._softmax.default])
+    n0 --> n1
+    n2([aten.amax.default])
+    n1 --> n2
+    n3[prims.amax.default]
+    n2 --> n3
+    n4([aten.sub.Tensor])
+    n1 --> n4
+    n5([aten.expand.default])
+    n4 --> n5
+    n6[prims.broadcast_in_dim.default]
+    n5 --> n6
+    n7[prims.sub.default]
+    n4 --> n7
+    n8([aten.exp.default])
+    n1 --> n8
+    n9[prims.exp.default]
+    n8 --> n9
+    n10([aten.sum.dim_IntList])
+    n1 --> n10
+    n11[prims.sum.default]
+    n10 --> n11
+    n12([aten.div.Tensor])
+    n1 --> n12
+    n13([aten.expand.default])
+    n12 --> n13
+    n14[prims.broadcast_in_dim.default]
+    n13 --> n14
+    n15[prims.div.default]
+    n12 --> n15
+
+    %% Legend: square=terminal, rounded=decomposable, trapezoid=untraceable
+    %% gray=leaf, green=decomposed, yellow=inductor-kept, red=untraceable
+    classDef leaf fill:#f5f5f5,stroke:#999,color:#666
+    classDef decomposed fill:#d4edda,stroke:#28a745,color:#155724
+    classDef kept fill:#fff3cd,stroke:#ffc107,color:#856404
+    classDef untraceable fill:#f8d7da,stroke:#dc3545,color:#721c24
+    classDef cycle fill:#f8d7da,stroke:#dc3545,stroke-dasharray:5,color:#721c24
+    class n0,n1,n2 decomposed
+    class n3,n6,n7,n9,n11,n14,n15 leaf
+    class n4,n5,n8,n10,n12,n13 kept
+```
+
+`--dot` produces Graphviz DOT format for local rendering.
 
 ## Other things you can do
 
@@ -71,10 +145,9 @@ Run `decomp-magician --help` for the full list. A few highlights:
 ```
 decomp-magician softmax --source              # show the decomposition function source
 decomp-magician softmax --diff                # full vs compile-mode leaf diff
-decomp-magician softmax --mermaid             # Mermaid diagram for GitHub
 decomp-magician aten.squeeze.dims --reverse   # which ops produce this child?
 decomp-magician --stats                       # bulk statistics across all ops
-decomp-magician addcmul --target-opset core_aten
+decomp-magician addcmul --target-opset core_aten  # check opset coverage
 decomp-magician --model model.pt2             # analyze an exported model
 ```
 
