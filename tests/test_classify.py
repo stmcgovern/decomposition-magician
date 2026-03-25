@@ -109,8 +109,8 @@ class TestInductorKept:
 
     def test_agrees_with_inductor_table(self):
         """Cross-check classify() against the raw inductor table."""
-        from decomp_magician.classify import _build_inductor_kept
-        kept_names = _build_inductor_kept()
+        from decomp_magician.classify import _get_inductor_kept_set
+        kept_names = _get_inductor_kept_set()
         test_ops = [
             torch.ops.aten.add.Tensor,
             torch.ops.aten.mm.default,
@@ -134,10 +134,16 @@ class TestTags:
 
 
 class TestDtensorStrategy:
+    def test_always_populated(self):
+        """classify() always populates dtensor_strategy."""
+        op = torch.ops.aten.mm.default
+        cls = classify(op)
+        assert cls.dtensor_strategy is not None
+
     def test_leaf_op_is_missing(self):
         """A true leaf op (no decomposition) should be 'missing' or 'registered'."""
         op = torch.ops.aten.mm.default
-        cls = classify(op, dtensor=True)
+        cls = classify(op)
         assert cls.dtensor_strategy in ("registered", "missing", "not-applicable")
 
     def test_cia_op_never_missing(self):
@@ -161,7 +167,7 @@ class TestDtensorStrategy:
                     continue
                 if not op._can_decompose():
                     continue
-                cls = classify(op, dtensor=True)
+                cls = classify(op)
                 assert cls.dtensor_strategy in ("registered", "decomp-fallback"), (
                     f"{op.name()} has _can_decompose()=True but "
                     f"dtensor_strategy={cls.dtensor_strategy!r}"
@@ -190,9 +196,19 @@ class TestOpClassValidation:
             assert cls.decomp_type == dt
 
     def test_valid_dtensor_strategies(self):
-        for ds in ("registered", "decomp-fallback", "missing", "not-applicable", None):
+        for ds in ("registered", "decomp-fallback", "missing", "not-applicable"):
             cls = OpClass(decomp_type="leaf", dtensor_strategy=ds)
             assert cls.dtensor_strategy == ds
+
+    def test_inductor_kept_requires_table_decomp(self):
+        """inductor_kept only makes sense for ops in the decomposition table."""
+        with pytest.raises(ValueError, match="inductor_kept requires"):
+            OpClass(decomp_type="leaf", inductor_kept=True)
+        with pytest.raises(ValueError, match="inductor_kept requires"):
+            OpClass(decomp_type="CIA", inductor_kept=True)
+        # Valid: table and both
+        OpClass(decomp_type="table", inductor_kept=True)
+        OpClass(decomp_type="both", inductor_kept=True)
 
 
 class TestOpCategory:

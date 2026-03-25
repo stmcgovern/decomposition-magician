@@ -4,7 +4,10 @@ import pytest
 import torch
 
 from decomp_magician.classify import OpClass
-from decomp_magician.tree import DecompNode, build_tree, collect_leaf_counts, _trace_decomp, _make_meta_args
+from decomp_magician.tree import (
+    DecompNode, DecompSource, build_tree, collect_leaf_counts,
+    get_decomp_source, _trace_decomp, _make_meta_args,
+)
 
 
 class TestDecompNodeInvariants:
@@ -28,6 +31,12 @@ class TestDecompNodeInvariants:
         assert not node.traceable
         assert node.error == "test error"
         assert node.children == ()
+
+    def test_untraceable_without_error_raises(self):
+        """Untraceable node must explain why (traceable ↔ error is None)."""
+        op = torch.ops.aten.mul.Tensor
+        with pytest.raises(ValueError, match="Untraceable node must have an error reason"):
+            DecompNode(op=op, traceable=False)
 
     def test_count_zero_raises(self):
         """count must be >= 1."""
@@ -276,3 +285,69 @@ class TestCollectLeafCounts:
 
         auto = collect_leaf_counts(node)
         assert auto == manual
+
+
+class TestClassifyCache:
+    def test_classify_is_cached(self):
+        """classify() returns the same object on repeated calls."""
+        from decomp_magician.classify import classify
+        op = torch.ops.aten.addcmul.default
+        cls1 = classify(op)
+        cls2 = classify(op)
+        assert cls1 is cls2
+
+    def test_classify_always_has_dtensor_strategy(self):
+        """classify() always populates dtensor_strategy (no None)."""
+        from decomp_magician.classify import classify
+        op = torch.ops.aten.addcmul.default
+        cls = classify(op)
+        assert cls.dtensor_strategy is not None
+
+    def test_classify_returns_opclass(self):
+        from decomp_magician.classify import classify
+        op = torch.ops.aten.addcmul.default
+        cls = classify(op)
+        assert isinstance(cls, OpClass)
+        assert cls.decomp_type in ("table", "both")
+
+
+class TestDecompSource:
+    def test_table_op_has_source(self):
+        """Table decomposition ops should have retrievable source."""
+        op = torch.ops.aten.addcmul.default
+        src = get_decomp_source(op)
+        assert src is not None
+        assert isinstance(src, DecompSource)
+        assert "addcmul" in src.op
+        assert "def addcmul" in src.source
+        assert src.line > 0
+        assert src.file
+
+    def test_leaf_op_no_source(self):
+        """Leaf ops have no decomposition — source should be None."""
+        op = torch.ops.aten.mm.default
+        src = get_decomp_source(op)
+        assert src is None
+
+    def test_cia_walks_to_child_source(self):
+        """CIA ops with C++ kernels should find source from their first child."""
+        op = torch.ops.aten.batch_norm.default
+        src = get_decomp_source(op)
+        assert src is not None
+        # Source comes from a child, not the root op
+        assert src.op != "aten.batch_norm.default"
+        assert "batch_norm" in src.source
+
+    def test_source_location_property(self):
+        op = torch.ops.aten.addcmul.default
+        src = get_decomp_source(op)
+        assert src is not None
+        assert src.location == f"{src.file}:{src.line}"
+
+    def test_source_path_shortened(self):
+        """Source file path should be shortened (not an absolute system path)."""
+        op = torch.ops.aten.addcmul.default
+        src = get_decomp_source(op)
+        assert src is not None
+        assert "torch/" in src.file
+        assert not src.file.startswith("/")

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from decomp_magician.classify import DecompType
 from decomp_magician.dispatch import DispatchInfo, get_dispatch_info_cached
 from decomp_magician.tree import (
     DecompNode,
@@ -208,7 +209,7 @@ def tree_to_dict(node: DecompNode) -> dict:
         "decomp_type": cls.decomp_type,
         "count": node.count,
         "inductor_kept": cls.inductor_kept,
-        "backends": cls.has_backend,
+        "backends": dict(cls.has_backend),
         "tags": cls.tags,
         "mutable": cls.is_mutable,
         "alias_info": cls.has_alias_info,
@@ -216,8 +217,7 @@ def tree_to_dict(node: DecompNode) -> dict:
     }
     if node.error:
         d["error"] = node.error
-    if cls.dtensor_strategy is not None:
-        d["dtensor_strategy"] = cls.dtensor_strategy
+    d["dtensor_strategy"] = cls.dtensor_strategy
     if node.children:
         d["children"] = [tree_to_dict(c) for c in node.children]
     return d
@@ -228,7 +228,7 @@ def leaves_to_dict(node: DecompNode) -> dict:
     root_name = op_display_name(node.op)
 
     if not node.children:
-        return {"op": root_name, "decomp_type": "leaf", "leaves": []}
+        return {"op": root_name, "decomp_type": DecompType.LEAF, "leaves": []}
 
     lf = collect_leaf_frontier(node)
 

@@ -6,8 +6,10 @@ import warnings
 from collections import Counter
 from dataclasses import dataclass
 
-from decomp_magician.classify import classify, is_dtensor_intercept, is_dtensor_gap
-from decomp_magician.reverse import is_out_variant
+from decomp_magician.classify import (
+    DtensorStrategy, classify, get_all_decomposable_ops,
+    is_dtensor_gap, is_dtensor_intercept, is_out_variant,
+)
 from decomp_magician.tree import DecompNode, build_tree, op_display_name
 
 
@@ -43,7 +45,7 @@ class StatsResult:
     classify_errors: int
     leaf_ops: Counter[str]
     deepest: list[tuple[str, int]]
-    untraceable_ops: list[tuple[str, str]] = ()  # (op_name, error_reason)
+    untraceable_ops: tuple[tuple[str, str], ...] = ()
     dtensor: DtensorStats | None = None
 
     def __post_init__(self):
@@ -82,11 +84,18 @@ class StatsResult:
                 )
 
 
-def compute_stats(compile: bool = False, dtensor: bool = False) -> StatsResult:
-    """Compute statistics across all decomposable ops."""
-    from torch._decomp import decomposition_table
+def compute_stats(
+    compile: bool = False, dtensor: bool = False,
+) -> StatsResult:
+    """Compute statistics across all decomposable ops.
 
-    all_ops = list(decomposition_table.keys())
+    Args:
+        compile: If True, treat inductor-kept ops as leaves.
+        dtensor: If True, include DTensor coverage analysis in the result.
+                 Classification always includes DTensor strategy (it's intrinsic);
+                 this flag controls whether to aggregate and report it.
+    """
+    all_ops = get_all_decomposable_ops()
     by_type: Counter[str] = Counter()
     inductor_kept = 0
     traceable = 0
@@ -98,10 +107,7 @@ def compute_stats(compile: bool = False, dtensor: bool = False) -> StatsResult:
     non_out_count = 0
 
     # DTensor tracking
-    dt_registered = 0
-    dt_decomp_fallback = 0
-    dt_missing = 0
-    dt_not_applicable = 0
+    dt_by_strategy: Counter[str] = Counter()
     dt_fully_covered = 0
     dt_has_gaps = 0
     dt_uncovered_leaves: Counter[str] = Counter()
@@ -114,7 +120,7 @@ def compute_stats(compile: bool = False, dtensor: bool = False) -> StatsResult:
         non_out_count += 1
 
         try:
-            cls = classify(op, dtensor=dtensor)
+            cls = classify(op)
         except Exception:
             classify_errors += 1
             continue
@@ -124,19 +130,12 @@ def compute_stats(compile: bool = False, dtensor: bool = False) -> StatsResult:
             inductor_kept += 1
 
         if dtensor:
-            if cls.dtensor_strategy == "registered":
-                dt_registered += 1
-            elif cls.dtensor_strategy == "decomp-fallback":
-                dt_decomp_fallback += 1
-            elif cls.dtensor_strategy == "missing":
-                dt_missing += 1
-            elif cls.dtensor_strategy == "not-applicable":
-                dt_not_applicable += 1
+            dt_by_strategy[cls.dtensor_strategy] += 1
 
         try:
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore")
-                node = build_tree(op, compile=compile, dtensor=dtensor)
+                node = build_tree(op, compile=compile)
         except Exception as e:
             untraceable += 1
             untraceable_list.append((name, f"{type(e).__name__}: {e}"))
@@ -144,7 +143,7 @@ def compute_stats(compile: bool = False, dtensor: bool = False) -> StatsResult:
 
         if not node.traceable:
             untraceable += 1
-            untraceable_list.append((name, node.error or "unknown"))
+            untraceable_list.append((name, node.error))
         else:
             traceable += 1
             if node.children:
@@ -166,10 +165,10 @@ def compute_stats(compile: bool = False, dtensor: bool = False) -> StatsResult:
     dtensor_stats = None
     if dtensor:
         dtensor_stats = DtensorStats(
-            registered=dt_registered,
-            decomp_fallback=dt_decomp_fallback,
-            missing=dt_missing,
-            not_applicable=dt_not_applicable,
+            registered=dt_by_strategy[DtensorStrategy.REGISTERED],
+            decomp_fallback=dt_by_strategy[DtensorStrategy.DECOMP_FALLBACK],
+            missing=dt_by_strategy[DtensorStrategy.MISSING],
+            not_applicable=dt_by_strategy[DtensorStrategy.NOT_APPLICABLE],
             fully_covered=dt_fully_covered,
             has_gaps=dt_has_gaps,
             top_uncovered=dt_uncovered_leaves.most_common(15),
@@ -185,7 +184,7 @@ def compute_stats(compile: bool = False, dtensor: bool = False) -> StatsResult:
         classify_errors=classify_errors,
         leaf_ops=leaf_ops,
         deepest=depths[:10],
-        untraceable_ops=untraceable_list,
+        untraceable_ops=tuple(untraceable_list),
         dtensor=dtensor_stats,
     )
 

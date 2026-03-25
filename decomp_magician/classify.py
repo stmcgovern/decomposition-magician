@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 import re
 import sys
+from types import MappingProxyType
 
 if sys.version_info >= (3, 11):
     from enum import StrEnum
@@ -13,13 +15,10 @@ else:
 
     class StrEnum(str, Enum):
         """Backport of StrEnum for Python < 3.11."""
-from typing import TYPE_CHECKING, NamedTuple
+from typing import NamedTuple
 
 import torch
 from torch._ops import OpOverload
-
-if TYPE_CHECKING:
-    from decomp_magician.dispatch import AutogradType
 
 
 class DecompType(StrEnum):
@@ -62,15 +61,13 @@ OP_CATEGORIES = frozenset(OpCategory)
 @dataclass(frozen=True)
 class OpClass:
     decomp_type: DecompType
-    has_backend: dict[str, bool] = field(default_factory=dict)
+    has_backend: Mapping[str, bool] = field(default_factory=dict)
     tags: tuple[str, ...] = ()
     is_mutable: bool = False
     has_alias_info: bool = False
     inductor_kept: bool = False
     op_category: OpCategory = OpCategory.OTHER
-    dtensor_strategy: DtensorStrategy | None = None
-    autograd_type: AutogradType | None = None
-    has_adiov: bool | None = None  # non-fallthrough ADInplaceOrView kernel
+    dtensor_strategy: DtensorStrategy = DtensorStrategy.MISSING
 
     def __post_init__(self):
         if self.decomp_type not in DECOMP_TYPES:
@@ -78,14 +75,21 @@ class OpClass:
                 f"Invalid decomp_type {self.decomp_type!r}, "
                 f"expected one of {sorted(DECOMP_TYPES)}"
             )
-        if self.dtensor_strategy is not None and self.dtensor_strategy not in DTENSOR_STRATEGIES:
+        if self.dtensor_strategy not in DTENSOR_STRATEGIES:
             raise ValueError(
                 f"Invalid dtensor_strategy {self.dtensor_strategy!r}, "
-                f"expected one of {sorted(DTENSOR_STRATEGIES)} or None"
+                f"expected one of {sorted(DTENSOR_STRATEGIES)}"
+            )
+        if self.inductor_kept and self.decomp_type not in (
+            DecompType.TABLE, DecompType.BOTH,
+        ):
+            raise ValueError(
+                f"inductor_kept requires decomp_type TABLE or BOTH, "
+                f"got {self.decomp_type!r}"
             )
 
 
-def is_dtensor_intercept(strategy: DtensorStrategy | None) -> bool:
+def is_dtensor_intercept(strategy: DtensorStrategy) -> bool:
     """Whether this DTensor strategy intercepts dispatch (children unreachable).
 
     Only 'registered' strategies intercept — 'decomp-fallback' traces through
@@ -94,7 +98,7 @@ def is_dtensor_intercept(strategy: DtensorStrategy | None) -> bool:
     return strategy == DtensorStrategy.REGISTERED
 
 
-def is_dtensor_gap(strategy: DtensorStrategy | None) -> bool:
+def is_dtensor_gap(strategy: DtensorStrategy) -> bool:
     """Whether this DTensor strategy represents a real coverage gap.
 
     Only 'missing' is a gap — the op has tensor inputs (so DTensor dispatch
@@ -111,47 +115,68 @@ _BACKENDS = {
     "meta": torch._C.DispatchKey.Meta,
 }
 
+_inductor_table_cache: dict | None = None
+
+
+def _get_inductor_table() -> dict:
+    """Lazily load and cache the inductor decomposition table.
+
+    Shared by _get_inductor_kept_set (classify-time) and _get_decomp_fn
+    (trace-time) so select_decomp_table() is called at most once.
+    """
+    global _inductor_table_cache
+    if _inductor_table_cache is not None:
+        return _inductor_table_cache
+
+    try:
+        from torch._inductor.decomposition import select_decomp_table
+        _inductor_table_cache = select_decomp_table()
+    except Exception:
+        import warnings
+        warnings.warn(
+            "Could not load inductor decomposition table — "
+            "inductor-kept detection and compile mode disabled.",
+            stacklevel=2,
+        )
+        _inductor_table_cache = {}
+
+    return _inductor_table_cache
+
+
 _inductor_kept_cache: set[str] | None = None
 
 
-def _build_inductor_kept() -> set[str]:
-    """Build a set of op names that Inductor preserves without decomposition.
+def _get_inductor_kept_set() -> set[str]:
+    """Cached set of op names that Inductor preserves without decomposition.
 
     An op is "inductor-kept" if it has a decomposition in the raw table
     but is absent from the Inductor table — meaning Inductor uses a direct
-    lowering instead. Ops that are in decomps_to_exclude but re-added with
-    a custom Inductor decomp are NOT kept; they're just decomposed differently.
+    lowering instead.
     """
     global _inductor_kept_cache
     if _inductor_kept_cache is not None:
         return _inductor_kept_cache
 
-    result: set[str] = set()
-    try:
-        from torch._decomp import decomposition_table
-        from torch._inductor.decomposition import select_decomp_table
+    inductor_table = _get_inductor_table()
+    if not inductor_table:
+        # Inductor table unavailable — don't mark anything as kept
+        _inductor_kept_cache = set()
+        return _inductor_kept_cache
 
-        inductor_table = select_decomp_table()
-        for op in decomposition_table:
-            if not isinstance(op, OpOverload):
-                continue
-            if op not in inductor_table:
-                result.add(op.name())
-    except Exception:
-        import warnings
-        warnings.warn(
-            "Could not load Inductor decomposition table — inductor-kept detection disabled.",
-            stacklevel=2,
-        )
+    result: set[str] = set()
+
+    from torch._decomp import decomposition_table
+    for op in decomposition_table:
+        if not isinstance(op, OpOverload):
+            continue
+        if op not in inductor_table:
+            result.add(op.name())
+
     _inductor_kept_cache = result
     return result
 
 
-def _get_decomp_type(op: OpOverload) -> DecompType:
-    from torch._decomp import decomposition_table
-
-    in_table = op in decomposition_table
-    has_cia = op._can_decompose()
+def _get_decomp_type(in_table: bool, has_cia: bool) -> DecompType:
     if in_table and has_cia:
         return DecompType.BOTH
     if in_table:
@@ -291,7 +316,7 @@ def _is_view_op(op: OpOverload) -> bool:
     )
 
 
-def _get_op_category(op: OpOverload) -> OpCategory:
+def _get_op_category(op: OpOverload, has_tensor_input: bool) -> OpCategory:
     """Classify an op's computational pattern.
 
     Detection priority:
@@ -304,6 +329,10 @@ def _get_op_category(op: OpOverload) -> OpCategory:
     Note: categories mix computational shape (pointwise, reduction, view, factory)
     with ML domain (loss, norm, spatial). This is intentional — the classification
     serves human comprehension, not a formal type system.
+
+    Args:
+        has_tensor_input: Whether the op has any tensor arguments.
+            Pre-computed by the caller — shared with _get_dtensor_strategy.
     """
     tags = op.tags
 
@@ -318,7 +347,7 @@ def _get_op_category(op: OpOverload) -> OpCategory:
     # 2. Schema analysis — structural
     if _is_view_op(op):
         return OpCategory.VIEW
-    if not _has_tensor_input(op):
+    if not has_tensor_input:
         return OpCategory.FACTORY
     if torch.Tag.nondeterministic_seeded in tags:
         return OpCategory.RANDOM
@@ -334,8 +363,18 @@ def _get_op_category(op: OpOverload) -> OpCategory:
     return OpCategory.OTHER
 
 
-def _get_dtensor_strategy(op: OpOverload) -> DtensorStrategy:
-    """Check DTensor sharding strategy registration status."""
+def _get_dtensor_strategy(
+    op: OpOverload, has_decomp: bool, has_tensor_input: bool,
+) -> DtensorStrategy:
+    """Check DTensor sharding strategy registration status.
+
+    Args:
+        has_decomp: Whether the op has any decomposition (table or CIA).
+        has_tensor_input: Whether the op has any tensor arguments.
+        Both are pre-computed by classify() to avoid redundant work and
+        to make the shared dependency between OpCategory and DtensorStrategy
+        explicit.
+    """
     dt = _init_dtensor()
     prop = dt.propagator
     decomp_cls = dt.decomp_strategy_cls
@@ -353,48 +392,67 @@ def _get_dtensor_strategy(op: OpOverload) -> DtensorStrategy:
     if decomp_cls is not None and decomp_cls.has_decomp(op):
         return DtensorStrategy.DECOMP_FALLBACK
 
-    # CIA ops auto-decompose before DTensor dispatch, so DTensor
-    # handles the children via fallback — same as table decomps.
-    # This check is independent of DTensor imports.
-    if op._can_decompose():
+    # Ops with any decomposition (table or CIA) auto-decompose before
+    # DTensor dispatch, so DTensor handles the children via fallback.
+    if has_decomp:
         return DtensorStrategy.DECOMP_FALLBACK
 
     # Factory/allocation ops have no tensor inputs, so DTensor dispatch
     # (which is input-driven via overloaded_args) can never reach them.
-    if not _has_tensor_input(op):
+    if not has_tensor_input:
         return DtensorStrategy.NOT_APPLICABLE
 
     return DtensorStrategy.MISSING
 
 
-def classify(op: OpOverload, dtensor: bool = False, dispatch: bool = False) -> OpClass:
+_classify_cache: dict[OpOverload, OpClass] = {}
+
+
+def classify(op: OpOverload) -> OpClass:
     """Classify an op's decomposition type, backend support, and properties.
 
-    Args:
-        op: The operator to classify.
-        dtensor: If True, check DTensor sharding strategy.
-        dispatch: If True, populate autograd_type and has_adiov fields
-                  from the dispatch table (requires _dispatch_dump_table).
+    An op's classification is intrinsic — it doesn't depend on what
+    questions you plan to ask about it.  Results are globally cached:
+    the second call for the same op is a dict lookup.
     """
-    autograd_type = None
-    has_adiov = None
-    if dispatch:
-        from decomp_magician.dispatch import get_dispatch_info
-        dinfo = get_dispatch_info(op)
-        autograd_type = dinfo.autograd_type
-        has_adiov = dinfo.has_adiov
+    cached = _classify_cache.get(op)
+    if cached is not None:
+        return cached
 
-    return OpClass(
-        decomp_type=_get_decomp_type(op),
-        has_backend=_get_backends(op),
+    # Compute shared predicates once — these determine multiple classification axes.
+    # has_decomp: shared by DecompType and DtensorStrategy
+    # has_tensor_input: shared by OpCategory (FACTORY) and DtensorStrategy (NOT_APPLICABLE)
+    from torch._decomp import decomposition_table
+    in_table = op in decomposition_table
+    has_cia = op._can_decompose()
+    has_tensor_input = _has_tensor_input(op)
+
+    result = OpClass(
+        decomp_type=_get_decomp_type(in_table, has_cia),
+        has_backend=MappingProxyType(_get_backends(op)),
         tags=_get_tags(op),
         is_mutable=op._schema.is_mutable,
         has_alias_info=any(
             arg.alias_info is not None for arg in op._schema.arguments
         ),
-        inductor_kept=op.name() in _build_inductor_kept(),
-        op_category=_get_op_category(op),
-        dtensor_strategy=_get_dtensor_strategy(op) if dtensor else None,
-        autograd_type=autograd_type,
-        has_adiov=has_adiov,
+        inductor_kept=op.name() in _get_inductor_kept_set(),
+        op_category=_get_op_category(op, has_tensor_input=has_tensor_input),
+        dtensor_strategy=_get_dtensor_strategy(
+            op, has_decomp=in_table or has_cia, has_tensor_input=has_tensor_input,
+        ),
     )
+    _classify_cache[op] = result
+    return result
+
+
+def is_out_variant(name: str) -> bool:
+    """Check if an op name is an _out variant."""
+    overload = name.rsplit(".", 1)[-1] if "." in name else ""
+    return overload == "out" or overload.endswith("_out")
+
+
+def get_all_decomposable_ops() -> list[OpOverload]:
+    """Get all ops from the decomposition table."""
+    from torch._decomp import decomposition_table
+
+    return list(decomposition_table.keys())

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import inspect
 from collections import Counter
 from dataclasses import dataclass, replace
 from typing import NamedTuple
@@ -10,7 +11,10 @@ import torch
 from torch._ops import OpOverload
 from torch.utils._python_dispatch import TorchDispatchMode
 
-from decomp_magician.classify import DecompType, OpClass, classify, is_dtensor_gap, is_dtensor_intercept
+from decomp_magician.classify import (
+    DecompType, OpClass, _get_inductor_table, classify,
+    is_dtensor_gap, is_dtensor_intercept,
+)
 
 
 def op_display_name(op) -> str:
@@ -22,12 +26,15 @@ def op_display_name(op) -> str:
     return dotted
 
 
+_LEAF_CLASS = OpClass(DecompType.LEAF)
+
+
 @dataclass(frozen=True)
 class DecompNode:
     op: OpOverload
     children: tuple[DecompNode, ...] = ()
     count: int = 1
-    classification: OpClass = OpClass(DecompType.LEAF)
+    classification: OpClass = _LEAF_CLASS
     traceable: bool = True
     error: str | None = None
 
@@ -38,6 +45,8 @@ class DecompNode:
             raise ValueError("Untraceable node cannot have children")
         if self.error is not None and self.traceable:
             raise ValueError("Node with error must be untraceable")
+        if not self.traceable and self.error is None:
+            raise ValueError("Untraceable node must have an error reason")
 
 
 def collect_leaf_counts(node: DecompNode) -> Counter[str]:
@@ -72,14 +81,133 @@ class _RecordingMode(TorchDispatchMode):
         return func(*args, **(kwargs or {}))
 
 
-def _get_decomp_fn(op: OpOverload):
-    """Get the decomposition function for an op, checking table first."""
+def _get_decomp_fn(op: OpOverload, compile: bool = False):
+    """Get the decomposition function for an op.
+
+    In compile mode, uses the inductor decomposition table — this reflects
+    what torch.compile actually does, including inductor-specific decompositions
+    and ops that inductor keeps without decomposing.
+
+    In full mode, checks the standard decomposition table first, then CIA.
+    """
+    if compile:
+        table = _get_inductor_table()
+        return table.get(op)
+
     from torch._decomp import decomposition_table
 
     if op in decomposition_table:
         return decomposition_table[op]
     if op._can_decompose():
         return op.decompose
+    return None
+
+
+@dataclass(frozen=True)
+class DecompSource:
+    """Source code and location of a decomposition function."""
+    op: str
+    file: str
+    line: int
+    source: str
+
+    @property
+    def location(self) -> str:
+        return f"{self.file}:{self.line}"
+
+
+def _shorten_torch_path(filepath: str) -> str:
+    """Shorten an absolute path to be relative to the torch package root.
+
+    e.g. /usr/lib/python3.10/site-packages/torch/_decomp/decompositions.py
+      → torch/_decomp/decompositions.py
+    """
+    import os.path
+    torch_root = os.path.dirname(torch.__file__)  # .../torch
+    pkg_root = os.path.dirname(torch_root)         # .../site-packages or dev root
+    try:
+        return os.path.relpath(filepath, pkg_root)
+    except ValueError:
+        # Different drives on Windows
+        return filepath
+
+
+def _get_decomp_source_fn(op: OpOverload, compile: bool = False):
+    """Get the inspectable decomposition function for source display.
+
+    Unlike _get_decomp_fn, this skips the op.decompose trampoline for CIA ops
+    and instead looks for a Python kernel in py_kernels. Returns None for C++
+    CIA kernels (which have no Python source to inspect).
+    """
+    if compile:
+        table = _get_inductor_table()
+        return table.get(op)
+
+    from torch._decomp import decomposition_table
+
+    if op in decomposition_table:
+        return decomposition_table[op]
+
+    # CIA op — check for Python kernel
+    if op._can_decompose():
+        dk = torch._C.DispatchKey.CompositeImplicitAutograd
+        if dk in getattr(op, 'py_kernels', {}):
+            return op.py_kernels[dk]
+        # C++ CIA kernel — no Python source available
+        return None
+
+    return None
+
+
+def _inspect_decomp_fn(op: OpOverload, decomp_fn) -> DecompSource | None:
+    """Try to extract source from a decomposition function."""
+    try:
+        source = inspect.getsource(decomp_fn)
+        source_file = inspect.getfile(decomp_fn)
+        _, line = inspect.getsourcelines(decomp_fn)
+    except (OSError, TypeError):
+        return None
+
+    return DecompSource(
+        op=op_display_name(op),
+        file=_shorten_torch_path(source_file),
+        line=line,
+        source=source,
+    )
+
+
+def get_decomp_source(
+    op: OpOverload, compile: bool = False,
+) -> DecompSource | None:
+    """Get the source code of the decomposition function for an op.
+
+    Returns None if the op has no decomposition or the source can't be retrieved.
+    For CIA ops with C++ kernels (e.g. batch_norm), walks the decomposition tree
+    to find the first child with Python source — this is usually where the real
+    logic lives (e.g. native_batch_norm).
+    """
+    decomp_fn = _get_decomp_source_fn(op, compile=compile)
+    if decomp_fn is not None:
+        return _inspect_decomp_fn(op, decomp_fn)
+
+    # No direct Python source — walk children to find the first one that has it.
+    # This handles CIA ops like batch_norm → native_batch_norm.
+    result = _trace_decomp(op, compile=compile)
+    if isinstance(result, str):
+        return None
+
+    seen = set()
+    for child_op in result:
+        child_name = child_op.name()
+        if child_name in seen:
+            continue
+        seen.add(child_name)
+        child_fn = _get_decomp_source_fn(child_op, compile=compile)
+        if child_fn is not None:
+            src = _inspect_decomp_fn(child_op, child_fn)
+            if src is not None:
+                return src
+
     return None
 
 
@@ -222,33 +350,38 @@ def _make_arg(arg):
     return _SENTINEL
 
 
-# Module-level cache: maps each OpOverload to its traced decomposition result.
+# Module-level cache: maps (OpOverload, compile) to traced decomposition result.
 # Values are immutable (tuples or strings), so sharing is safe.
-# Grows without bound but only up to the number of unique ops (~1200).
-# For long-running library use, call _trace_cache.clear() to reclaim.
-_trace_cache: dict[OpOverload, tuple[OpOverload, ...] | str] = {}
+# Keyed by (op, compile) because compile mode uses a different decomposition table
+# (inductor's) which may produce different children for the same op.
+_trace_cache: dict[tuple[OpOverload, bool], tuple[OpOverload, ...] | str] = {}
 
 
-def _trace_decomp(op: OpOverload) -> tuple[OpOverload, ...] | str:
+def _trace_decomp(
+    op: OpOverload, compile: bool = False,
+) -> tuple[OpOverload, ...] | str:
     """Run the decomposition and record which ops are called.
 
     Results are cached since the same op always produces the same decomposition.
     Returns a tuple of ops, or an error string if tracing fails.
     """
-    cached = _trace_cache.get(op)
+    key = (op, compile)
+    cached = _trace_cache.get(key)
     if cached is not None:
         return cached
 
-    result = _trace_decomp_uncached(op)
-    _trace_cache[op] = result
+    result = _trace_decomp_uncached(op, compile=compile)
+    _trace_cache[key] = result
     return result
 
 
-def _trace_decomp_uncached(op: OpOverload) -> tuple[OpOverload, ...] | str:
+def _trace_decomp_uncached(
+    op: OpOverload, compile: bool = False,
+) -> tuple[OpOverload, ...] | str:
     """Run the decomposition and record which ops are called (no caching).
 
-    Tries multiple input configurations to maximize traceability:
-    1. Default shapes ([2,3,4,4] for general, 1D for index, bool for masks)
+    Input strategies (tried in order, first success wins):
+    1. Default meta tensor shapes ([2,3,4,4] for general, 1D for index, bool for masks)
     2. Flipped booleans (e.g. half_to_float=True needs half input)
     3. Filled optional scalars (e.g. clamp needs min or max non-None)
     4. Filled optional lists (e.g. upsample needs output_size or scale_factors)
@@ -256,11 +389,13 @@ def _trace_decomp_uncached(op: OpOverload) -> tuple[OpOverload, ...] | str:
     6. Alternative shapes via _ALT_SHAPES — varying dimensionality (1D–5D),
        spatial sizes, and channel configurations. In this mode, "weight" args
        get the full shape (for conv ops) and optional "bias" is set to None.
+    7. OpInfo sample inputs from PyTorch's test infrastructure (curated, high confidence)
 
-    Steps 2-5 modify the default args only. Step 6 creates fresh args and
+    Steps 1-5 use heuristic meta tensor args. Step 6 creates fresh args and
     does not re-apply steps 2-5 (retries are independent, not composed).
+    Step 7 is tried last because OpInfo inputs may hit specialized code paths.
     """
-    decomp_fn = _get_decomp_fn(op)
+    decomp_fn = _get_decomp_fn(op, compile=compile)
     if decomp_fn is None:
         return "no decomposition"
 
@@ -324,6 +459,14 @@ def _trace_decomp_uncached(op: OpOverload) -> tuple[OpOverload, ...] | str:
             retry = _try_trace(decomp_fn, alt_args, alt_kwargs)
             if isinstance(retry, tuple):
                 return retry
+
+    # Last resort: try OpInfo sample inputs from PyTorch's test infrastructure.
+    # These are curated per-op inputs that handle edge cases our heuristics miss.
+    # Tried last because OpInfo inputs may hit specialized code paths (e.g.
+    # single-element roll → clone) that produce non-representative traces.
+    opinfo_result = _try_opinfo_trace(op, decomp_fn)
+    if isinstance(opinfo_result, tuple):
+        return opinfo_result
 
     return result
 
@@ -512,6 +655,68 @@ def _fill_optional_lists(op: OpOverload, args: list, kwargs: dict) -> tuple[list
     return (new_args, kwargs) if changed else None
 
 
+# ---------------------------------------------------------------------------
+# OpInfo sample inputs (lazy-loaded from PyTorch's test infrastructure)
+# ---------------------------------------------------------------------------
+
+_opinfo_index: dict[str, list] | None = None
+
+
+def _get_opinfo_index() -> dict[str, list]:
+    """Lazily build an index mapping base op name → list of OpInfo entries.
+
+    Import is heavy (~1s), so we defer until first use.
+    """
+    global _opinfo_index
+    if _opinfo_index is not None:
+        return _opinfo_index
+
+    try:
+        from torch.testing._internal.common_methods_invocations import op_db
+    except Exception:
+        _opinfo_index = {}
+        return _opinfo_index
+
+    index: dict[str, list] = {}
+    for info in op_db:
+        key = info.aten_name or info.name
+        index.setdefault(key, []).append(info)
+    _opinfo_index = index
+    return _opinfo_index
+
+
+def _try_opinfo_trace(
+    op: OpOverload, decomp_fn,
+) -> tuple[OpOverload, ...] | str | None:
+    """Try to trace using OpInfo sample inputs.
+
+    Returns a tuple of ops on success, or None if OpInfo can't help
+    (no entry, sample generation fails, or trace fails for all samples).
+    """
+    # Extract base name: "aten::addcmul.default" → "addcmul"
+    full_name = op.name()
+    base = full_name.split("::")[1].split(".")[0] if "::" in full_name else full_name
+
+    index = _get_opinfo_index()
+    infos = index.get(base)
+    if not infos:
+        return None
+
+    for info in infos:
+        try:
+            samples = list(info.sample_inputs("cpu", torch.float32))
+        except Exception:
+            continue
+
+        for sample in samples[:3]:  # Try up to 3 samples per OpInfo
+            args = [sample.input] + list(sample.args)
+            result = _try_trace(decomp_fn, args, sample.kwargs)
+            if isinstance(result, tuple):
+                return result
+
+    return None
+
+
 def _try_trace(decomp_fn, args, kwargs) -> tuple[OpOverload, ...] | str:
     """Attempt to trace a decomposition function, returning ops or error."""
     recorder = _RecordingMode()
@@ -624,7 +829,6 @@ def _make_backward_arg(arg):
 def build_tree(
     op: OpOverload,
     depth: int = -1,
-    dtensor: bool = False,
     compile: bool = False,
     _ancestors: frozenset[str] | None = None,
 ) -> DecompNode:
@@ -633,19 +837,20 @@ def build_tree(
     Args:
         op: The operator to decompose.
         depth: Maximum recursion depth. -1 for unlimited.
-        dtensor: If True, classify DTensor strategy coverage.
-        compile: If True, treat inductor-kept ops as leaves.
+        compile: If True, use the inductor decomposition table. This reflects
+            what torch.compile actually does — including inductor-specific
+            decompositions and ops that inductor keeps without decomposing.
     """
     if _ancestors is None:
         _ancestors = frozenset()
 
-    cls = classify(op, dtensor=dtensor)
+    cls = classify(op)
 
     # Leaf or depth exhausted — no children
-    if cls.decomp_type == "leaf" or depth == 0:
+    if cls.decomp_type == DecompType.LEAF or depth == 0:
         return DecompNode(op=op, classification=cls)
 
-    # In compile mode, inductor-kept ops are treated as leaves
+    # In compile mode, inductor-kept ops are intentional leaves
     if compile and cls.inductor_kept:
         return DecompNode(op=op, classification=cls)
 
@@ -654,7 +859,7 @@ def build_tree(
     if op_name in _ancestors:
         return DecompNode(op=op, classification=cls, traceable=False, error="cycle detected")
 
-    result = _trace_decomp(op)
+    result = _trace_decomp(op, compile=compile)
     if isinstance(result, str):
         return DecompNode(op=op, classification=cls, traceable=False, error=result)
 
@@ -665,7 +870,7 @@ def build_tree(
 
     children = tuple(
         replace(
-            build_tree(child_op, depth=next_depth, dtensor=dtensor,
+            build_tree(child_op, depth=next_depth,
                        compile=compile, _ancestors=child_ancestors),
             count=count,
         )
@@ -715,7 +920,7 @@ def collect_untraceable_errors(node: DecompNode) -> list[tuple[str, str]]:
     errors: list[tuple[str, str]] = []
 
     def walk(n: DecompNode) -> None:
-        if not n.traceable and n.error:
+        if not n.traceable:
             name = op_display_name(n.op)
             if name not in seen:
                 seen.add(name)
@@ -729,13 +934,19 @@ def collect_untraceable_errors(node: DecompNode) -> list[tuple[str, str]]:
 
 @dataclass(frozen=True)
 class PurityResult:
-    """Purity analysis of a decomposition tree."""
+    """Purity analysis of a decomposition tree.
+
+    is_pure is derived — no mutable or ADIOV leaves means pure.
+    """
     op: str
-    is_pure: bool
     total_leaves: int
     mutable_leaves: tuple[tuple[str, int], ...]
     adiov_leaves: tuple[tuple[str, int], ...]
     mode_sensitive_leaves: tuple[tuple[str, int], ...]
+
+    @property
+    def is_pure(self) -> bool:
+        return len(self.mutable_leaves) == 0 and len(self.adiov_leaves) == 0
 
 
 def analyze_purity(node: DecompNode) -> PurityResult:
@@ -769,7 +980,6 @@ def analyze_purity(node: DecompNode) -> PurityResult:
 
     return PurityResult(
         op=op_display_name(node.op),
-        is_pure=len(mutable) == 0 and len(adiov) == 0,
         total_leaves=len(counts),
         mutable_leaves=tuple(mutable),
         adiov_leaves=tuple(adiov),

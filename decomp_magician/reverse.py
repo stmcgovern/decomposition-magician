@@ -5,8 +5,7 @@ from __future__ import annotations
 from collections import Counter
 from dataclasses import dataclass
 
-from torch._ops import OpOverload
-
+from decomp_magician.classify import get_all_decomposable_ops, is_out_variant
 from decomp_magician.tree import DecompNode, build_tree, op_display_name
 
 
@@ -40,23 +39,6 @@ def _search_tree(node: DecompNode, target: str) -> tuple[Counter[str], int | Non
     return ops, best_depth
 
 
-def _get_all_decomposable_ops() -> list[OpOverload]:
-    """Get all ops from the decomposition table.
-
-    CIA-only ops are excluded because some crash at the C level during
-    op.decompose() (SIGFPE/segfault), which cannot be caught in Python.
-    """
-    from torch._decomp import decomposition_table
-
-    return list(decomposition_table.keys())
-
-
-def is_out_variant(name: str) -> bool:
-    """Check if an op name is an _out variant."""
-    overload = name.rsplit(".", 1)[-1] if "." in name else ""
-    return overload == "out" or overload.endswith("_out")
-
-
 def reverse_lookup(
     target: str,
     depth: int = -1,
@@ -77,7 +59,7 @@ def reverse_lookup(
     """
     import warnings
 
-    ops = _get_all_decomposable_ops()
+    ops = get_all_decomposable_ops()
     results: list[ReverseEntry] = []
 
     for op in ops:
@@ -97,10 +79,12 @@ def reverse_lookup(
 
         all_ops, target_depth = _search_tree(node, target)
         if target in all_ops:
+            # target in all_ops guarantees _search_tree found it at depth > 0
+            assert target_depth is not None
             results.append(ReverseEntry(
                 op=name,
                 count=all_ops[target],
-                target_depth=target_depth or 0,
+                target_depth=target_depth,
             ))
 
     results.sort(key=lambda r: r.count, reverse=True)

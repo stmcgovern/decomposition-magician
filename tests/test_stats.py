@@ -45,8 +45,11 @@ class TestComputeStats:
         depths = [d for _, d in stats_full.deepest]
         assert depths == sorted(depths, reverse=True)
 
-    def test_compile_mode_different(self, stats_full, stats_compile):
-        assert stats_compile.untraceable <= stats_full.untraceable
+    def test_compile_mode_uses_inductor_table(self, stats_full, stats_compile):
+        """Compile mode uses the inductor decomposition table, which covers
+        different ops than the standard table. The traceable counts differ."""
+        assert stats_compile.traceable != stats_full.traceable or \
+               stats_compile.untraceable != stats_full.untraceable
 
     def test_accounting_invariant(self, stats_full):
         """traceable + untraceable + classify_errors == total_non_out."""
@@ -94,7 +97,7 @@ class TestStatsResultInvariants:
                 total=100, total_non_out=50, by_type={"table": 50}, inductor_kept=0,
                 traceable=40, untraceable=10, classify_errors=0,
                 leaf_ops=Counter(), deepest=[],
-                untraceable_ops=[("aten.foo.default", "error")] * 5,  # 5 != 10
+                untraceable_ops=(("aten.foo.default", "error"),) * 5,  # 5 != 10
             )
 
     def test_dtensor_partition_invariant_rejects_bad_data(self):

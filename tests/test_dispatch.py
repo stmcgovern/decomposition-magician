@@ -7,9 +7,8 @@ from decomp_magician.dispatch import (
     DispatchEntry,
     get_dispatch_info,
     get_dispatch_info_cached,
-    format_dispatch_short,
-    format_dispatch_detail,
 )
+from decomp_magician.format import format_dispatch_detail, format_dispatch_short
 
 
 class TestDispatchEntry:

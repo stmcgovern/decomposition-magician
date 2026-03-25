@@ -139,9 +139,9 @@ class TestPurityFlag:
 
 class TestADIOVFlag:
     def test_adiov_has_paths(self, capsys):
-        assert main(["addcmul", "--adiov", "--no-color"]) == 0
+        assert main(["_native_batch_norm_legit", "--adiov", "--no-color"]) == 0
         out = capsys.readouterr().out
-        assert "expand" in out
+        assert "copy_" in out
 
     def test_adiov_no_paths(self, capsys):
         assert main(["sigmoid", "--adiov", "--no-color"]) == 0
@@ -155,10 +155,10 @@ class TestADIOVFlag:
         assert "no ADIOV" in data["message"]
 
     def test_adiov_has_paths_json(self, capsys):
-        assert main(["addcmul", "--adiov", "--json"]) == 0
+        assert main(["_native_batch_norm_legit", "--adiov", "--json"]) == 0
         data = json.loads(capsys.readouterr().out)
         assert "op" in data
-        assert "children" in data or "adiov_paths" not in data
+        assert "children" in data
 
 
 class TestModelFlag:
@@ -472,7 +472,50 @@ class TestJson:
         assert mul_children[0]["count"] == 2
 
 
+class TestSourceFlag:
+    def test_source_text(self, capsys):
+        assert main(["addcmul", "--source", "--no-color"]) == 0
+        out = capsys.readouterr().out
+        assert "Source:" in out
+        assert "def addcmul" in out
+
+    def test_source_json(self, capsys):
+        assert main(["addcmul", "--source", "--json"]) == 0
+        data = json.loads(capsys.readouterr().out)
+        assert "source" in data
+        assert "file" in data["source"]
+        assert "line" in data["source"]
+        assert "def addcmul" in data["source"]["code"]
+
+    def test_source_leaf_op(self, capsys):
+        """Leaf ops have no decomposition source."""
+        assert main(["mm", "--source", "--no-color"]) == 0
+        out = capsys.readouterr().out
+        assert "No decomposition source" in out
+
+    def test_source_json_leaf_no_source(self, capsys):
+        """JSON output for leaf ops should not include source field."""
+        assert main(["mm", "--source", "--json"]) == 0
+        data = json.loads(capsys.readouterr().out)
+        assert "source" not in data
+
+    def test_source_with_leaves(self, capsys):
+        """--source should work with --leaves."""
+        assert main(["addcmul", "--leaves", "--source", "--no-color"]) == 0
+        out = capsys.readouterr().out
+        assert "Source:" in out
+
+    def test_source_cia_shows_child(self, capsys):
+        """CIA ops with C++ kernels should show first child's source."""
+        assert main(["batch_norm", "--source", "--no-color"]) == 0
+        out = capsys.readouterr().out
+        assert "Source:" in out
+        assert "via" in out
+
+
 class TestDtensorAncestorCoverage:
+    _DT_CFG = FormatConfig(show_dtensor=True)
+
     def _make_node(self, strategy, children=()):
         op = torch.ops.aten.mul.Tensor
         cls = OpClass(
@@ -487,46 +530,46 @@ class TestDtensorAncestorCoverage:
     def test_missing_suppressed_when_ancestor_registered(self):
         leaf = self._make_node("missing")
         parent = self._make_node("registered", children=[leaf])
-        output = format_tree(parent, _CFG)
+        output = format_tree(parent, self._DT_CFG)
         assert "MISSING" not in output
-        assert "via ancestor" in output
+        assert "registered ancestor" in output
 
     def test_missing_shown_when_no_ancestor_registered(self):
         leaf = self._make_node("missing")
         parent = self._make_node("decomp-fallback", children=[leaf])
-        output = format_tree(parent, _CFG)
+        output = format_tree(parent, self._DT_CFG)
         assert "MISSING" in output
 
     def test_decomp_fallback_does_not_cover(self):
         leaf = self._make_node("missing")
         mid = self._make_node("decomp-fallback", children=[leaf])
         root = self._make_node("decomp-fallback", children=[mid])
-        output = format_tree(root, _CFG)
+        output = format_tree(root, self._DT_CFG)
         assert "MISSING" in output
 
     def test_registered_covers_deep_descendants(self):
         deep_leaf = self._make_node("missing")
         mid = self._make_node("missing", children=[deep_leaf])
         root = self._make_node("registered", children=[mid])
-        output = format_tree(root, _CFG)
+        output = format_tree(root, self._DT_CFG)
         assert "MISSING" not in output
 
     def test_summary_covered_verdict(self):
         leaf = self._make_node("missing")
         parent = self._make_node("registered", children=[leaf])
-        summary = format_summary(parent, _CFG)
-        assert "dtensor: covered" in summary
+        summary = format_summary(parent, self._DT_CFG)
+        assert "dtensor: no gaps" in summary
 
     def test_summary_uncovered_verdict(self):
         leaf = self._make_node("missing")
         parent = self._make_node("decomp-fallback", children=[leaf])
-        summary = format_summary(parent, _CFG)
-        assert "1 uncovered" in summary
+        summary = format_summary(parent, self._DT_CFG)
+        assert "1 missing" in summary
 
     def test_summary_no_verdict_without_dtensor(self):
-        leaf = self._make_node(None)
-        parent = self._make_node(None, children=[leaf])
-        summary = format_summary(parent, _CFG)
+        leaf = self._make_node("missing")
+        parent = self._make_node("missing", children=[leaf])
+        summary = format_summary(parent, _CFG)  # show_dtensor=False
         assert "dtensor" not in summary
 
     def test_leaves_shows_uncovered(self):

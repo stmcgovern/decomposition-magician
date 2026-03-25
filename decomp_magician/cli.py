@@ -32,6 +32,7 @@ from decomp_magician.format import (
     format_opset,
     format_purity,
     format_reverse,
+    format_source,
     format_stats,
     format_summary,
     format_tree,
@@ -47,6 +48,7 @@ from decomp_magician.tree import (
     analyze_purity,
     build_tree,
     filter_adiov_paths,
+    get_decomp_source,
     op_display_name,
     trace_backward,
 )
@@ -62,6 +64,7 @@ def main(argv: list[str] | None = None) -> int:
         color=(not args.no_color and not args.json and should_use_color()),
         show_dispatch=args.dispatch_table,
         show_mode_sensitivity=args.mode_sensitivity,
+        show_dtensor=args.dtensor,
     )
 
     # Stats mode
@@ -135,7 +138,7 @@ def _build_parser(pkg_version):
     parser.add_argument("--dtensor", action="store_true",
                         help="Show DTensor sharding strategy coverage")
     parser.add_argument("--compile", action="store_true",
-                        help="Show what torch.compile produces")
+                        help="Use the inductor decomposition table (what torch.compile decomposes)")
     parser.add_argument("--leaves", action="store_true",
                         help="Show flat leaf frontier with propagated counts")
     parser.add_argument("--reverse", action="store_true",
@@ -166,6 +169,8 @@ def _build_parser(pkg_version):
                         help="Check if decomposition is pure (no mutable or ADIOV leaves)")
     parser.add_argument("--backward", action="store_true",
                         help="Show ops dispatched during the backward pass")
+    parser.add_argument("--source", action="store_true",
+                        help="Show the decomposition function source code")
     return parser
 
 
@@ -211,7 +216,7 @@ def _warn_untraceable(node, cfg: FormatConfig) -> None:
 # ---------------------------------------------------------------------------
 
 def _run_tree(op, resolved_name: str, args, cfg: FormatConfig) -> int:
-    node = build_tree(op, depth=args.depth, dtensor=args.dtensor, compile=args.compile)
+    node = build_tree(op, depth=args.depth, compile=args.compile)
 
     if args.pure:
         purity = analyze_purity(node)
@@ -256,6 +261,14 @@ def _run_tree(op, resolved_name: str, args, cfg: FormatConfig) -> int:
             if cfg.show_dispatch or cfg.show_mode_sensitivity:
                 enrich_tree_with_dispatch(d, node)
         add_untraceable_warnings(d, node)
+        if args.source:
+            src = get_decomp_source(op, compile=args.compile)
+            if src is not None:
+                d["source"] = {
+                    "file": src.file,
+                    "line": src.line,
+                    "code": src.source,
+                }
         print(json.dumps(d, indent=2))
         return 0
 
@@ -287,6 +300,14 @@ def _run_tree(op, resolved_name: str, args, cfg: FormatConfig) -> int:
         if args.verbose:
             print()
             print(format_verbose(node, cfg))
+
+    if args.source:
+        src = get_decomp_source(op, compile=args.compile)
+        if src is not None:
+            print()
+            print(format_source(src, cfg, root_op=resolved_name))
+        else:
+            print(f"\n  No decomposition source available for {resolved_name}")
 
     _warn_untraceable(node, cfg)
     return 0
@@ -521,8 +542,8 @@ def _run_model(args, cfg: FormatConfig) -> int:
         from decomp_magician.classify import classify as classify_op
         for name, op_obj in op_objects.items():
             try:
-                cls = classify_op(op_obj, dtensor=True)
-                dtensor_info[name] = cls.dtensor_strategy or DtensorStrategy.MISSING
+                cls = classify_op(op_obj)
+                dtensor_info[name] = cls.dtensor_strategy
             except Exception:
                 dtensor_info[name] = DtensorStrategy.MISSING
 
