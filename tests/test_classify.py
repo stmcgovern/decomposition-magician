@@ -109,8 +109,8 @@ class TestInductorKept:
 
     def test_agrees_with_inductor_table(self):
         """Cross-check classify() against the raw inductor table."""
-        from decomp_magician.classify import _build_inductor_kept
-        kept_names = _build_inductor_kept()
+        from decomp_magician.classify import _get_inductor_kept_set
+        kept_names = _get_inductor_kept_set()
         test_ops = [
             torch.ops.aten.add.Tensor,
             torch.ops.aten.mm.default,

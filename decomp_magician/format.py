@@ -18,7 +18,7 @@ from decomp_magician.classify import (
     is_dtensor_gap,
     is_dtensor_intercept,
 )
-from decomp_magician.dispatch import format_dispatch_short, get_dispatch_info_cached
+from decomp_magician.dispatch import DispatchInfo, get_dispatch_info_cached
 from decomp_magician.tree import (
     DecompNode,
     DecompSource,
@@ -144,13 +144,13 @@ def _format_annotation(
 
     if cfg.show_dtensor:
         if cls.dtensor_strategy == DtensorStrategy.REGISTERED:
-            annotation += "  " + _c(cfg, _GREEN, "dtensor: ok")
+            annotation += "  " + _c(cfg, _GREEN, "dtensor: registered")
         elif cls.dtensor_strategy == DtensorStrategy.DECOMP_FALLBACK:
-            annotation += "  " + _c(cfg, _GREEN, "dtensor: ok (via decomp)")
+            annotation += "  " + _c(cfg, _DIM, "dtensor: decomp-fallback")
         elif cls.dtensor_strategy == DtensorStrategy.NOT_APPLICABLE:
             annotation += "  " + _c(cfg, _DIM, "dtensor: n/a")
         elif cls.dtensor_strategy == DtensorStrategy.MISSING and ancestor_has_dtensor:
-            annotation += "  " + _c(cfg, _DIM, "dtensor: ok (via ancestor)")
+            annotation += "  " + _c(cfg, _DIM, "dtensor: registered ancestor")
         elif cls.dtensor_strategy == DtensorStrategy.MISSING:
             annotation += "  " + _c(cfg, _RED, "dtensor: MISSING")
 
@@ -272,9 +272,9 @@ def format_summary(node: DecompNode, cfg: FormatConfig) -> str:
             parts.append(_c(cfg, _RED, f"{n_unique} untraceable"))
     if cfg.show_dtensor:
         if dtensor_missing > 0:
-            parts.append(_c(cfg, _RED, f"dtensor: {dtensor_missing} uncovered"))
+            parts.append(_c(cfg, _RED, f"dtensor: {dtensor_missing} missing"))
         else:
-            parts.append(_c(cfg, _GREEN, "dtensor: covered"))
+            parts.append(_c(cfg, _DIM, "dtensor: no gaps"))
 
     return " · ".join(parts)
 
@@ -545,6 +545,37 @@ def format_backward(name: str, op_counts: Counter[str], cfg: FormatConfig) -> st
     return "\n".join(lines)
 
 
+def format_dispatch_short(info: DispatchInfo) -> str:
+    """Short annotation string for dispatch info: AG:type, ADIOV:yes/no."""
+    parts = []
+    ag_labels = {
+        "autograd_kernel": "AG:redispatch",
+        "math_kernel": "AG:terminal",
+        "fallthrough": "AG:fallthrough",
+        "other": "AG:other",
+        "none": "AG:none",
+    }
+    parts.append(ag_labels.get(info.autograd_type, f"AG:{info.autograd_type}"))
+    if info.has_adiov:
+        parts.append("ADIOV:yes")
+    return ", ".join(parts)
+
+
+def format_dispatch_detail(info: DispatchInfo) -> str:
+    """Multi-line dispatch info for verbose output."""
+    lines = [f"  dispatch: {info.autograd_type}"]
+    if info.autograd_entry:
+        lines.append(f"    AutogradCPU: [{info.autograd_entry.tag}]"
+                      f"{' (fallthrough)' if info.autograd_entry.is_fallthrough else ''}")
+    if info.adiov_entry:
+        lines.append(f"    ADInplaceOrView: [{info.adiov_entry.tag}]"
+                      f"{' (fallthrough)' if info.adiov_entry.is_fallthrough else ''}")
+    if info.dense_entry:
+        lines.append(f"    CPU: [{info.dense_entry.tag}]"
+                      f"{' (fallthrough)' if info.dense_entry.is_fallthrough else ''}")
+    return "\n".join(lines)
+
+
 def format_source(
     src: DecompSource, cfg: FormatConfig, root_op: str | None = None,
 ) -> str:
@@ -576,9 +607,9 @@ def format_model_dtensor_tag(
     if strategy is None:
         return ""
     if strategy == DtensorStrategy.REGISTERED:
-        return "  " + _c(cfg, _GREEN, "dtensor: ok")
+        return "  " + _c(cfg, _GREEN, "dtensor: registered")
     if strategy == DtensorStrategy.DECOMP_FALLBACK:
-        return "  " + _c(cfg, _GREEN, "dtensor: ok (via decomp)")
+        return "  " + _c(cfg, _DIM, "dtensor: decomp-fallback")
     if strategy == DtensorStrategy.NOT_APPLICABLE:
         return "  " + _c(cfg, _DIM, "dtensor: n/a")
     return "  " + _c(cfg, _RED, "dtensor: MISSING")

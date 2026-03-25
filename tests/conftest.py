@@ -15,9 +15,9 @@ from torch._ops import OpOverload
 def inductor_kept_op():
     """An op that is in the decomposition table but kept by Inductor."""
     from torch._decomp import decomposition_table
-    from decomp_magician.classify import _build_inductor_kept
+    from decomp_magician.classify import _get_inductor_kept_set
 
-    kept_names = _build_inductor_kept()
+    kept_names = _get_inductor_kept_set()
     for op in decomposition_table:
         if not isinstance(op, OpOverload):
             continue
@@ -30,9 +30,9 @@ def inductor_kept_op():
 def non_inductor_kept_decomposable_op():
     """An op that has a decomposition and is NOT inductor-kept."""
     from torch._decomp import decomposition_table
-    from decomp_magician.classify import _build_inductor_kept
+    from decomp_magician.classify import _get_inductor_kept_set
 
-    kept_names = _build_inductor_kept()
+    kept_names = _get_inductor_kept_set()
     for op in decomposition_table:
         if not isinstance(op, OpOverload):
             continue

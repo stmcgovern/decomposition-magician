@@ -115,38 +115,63 @@ _BACKENDS = {
     "meta": torch._C.DispatchKey.Meta,
 }
 
+_inductor_table_cache: dict | None = None
+
+
+def _get_inductor_table() -> dict:
+    """Lazily load and cache the inductor decomposition table.
+
+    Shared by _get_inductor_kept_set (classify-time) and _get_decomp_fn
+    (trace-time) so select_decomp_table() is called at most once.
+    """
+    global _inductor_table_cache
+    if _inductor_table_cache is not None:
+        return _inductor_table_cache
+
+    try:
+        from torch._inductor.decomposition import select_decomp_table
+        _inductor_table_cache = select_decomp_table()
+    except Exception:
+        import warnings
+        warnings.warn(
+            "Could not load inductor decomposition table — "
+            "inductor-kept detection and compile mode disabled.",
+            stacklevel=2,
+        )
+        _inductor_table_cache = {}
+
+    return _inductor_table_cache
+
+
 _inductor_kept_cache: set[str] | None = None
 
 
-def _build_inductor_kept() -> set[str]:
-    """Build a set of op names that Inductor preserves without decomposition.
+def _get_inductor_kept_set() -> set[str]:
+    """Cached set of op names that Inductor preserves without decomposition.
 
     An op is "inductor-kept" if it has a decomposition in the raw table
     but is absent from the Inductor table — meaning Inductor uses a direct
-    lowering instead. Ops that are in decomps_to_exclude but re-added with
-    a custom Inductor decomp are NOT kept; they're just decomposed differently.
+    lowering instead.
     """
     global _inductor_kept_cache
     if _inductor_kept_cache is not None:
         return _inductor_kept_cache
 
-    result: set[str] = set()
-    try:
-        from torch._decomp import decomposition_table
-        from torch._inductor.decomposition import select_decomp_table
+    inductor_table = _get_inductor_table()
+    if not inductor_table:
+        # Inductor table unavailable — don't mark anything as kept
+        _inductor_kept_cache = set()
+        return _inductor_kept_cache
 
-        inductor_table = select_decomp_table()
-        for op in decomposition_table:
-            if not isinstance(op, OpOverload):
-                continue
-            if op not in inductor_table:
-                result.add(op.name())
-    except Exception:
-        import warnings
-        warnings.warn(
-            "Could not load Inductor decomposition table — inductor-kept detection disabled.",
-            stacklevel=2,
-        )
+    result: set[str] = set()
+
+    from torch._decomp import decomposition_table
+    for op in decomposition_table:
+        if not isinstance(op, OpOverload):
+            continue
+        if op not in inductor_table:
+            result.add(op.name())
+
     _inductor_kept_cache = result
     return result
 
@@ -410,7 +435,7 @@ def classify(op: OpOverload) -> OpClass:
         has_alias_info=any(
             arg.alias_info is not None for arg in op._schema.arguments
         ),
-        inductor_kept=op.name() in _build_inductor_kept(),
+        inductor_kept=op.name() in _get_inductor_kept_set(),
         op_category=_get_op_category(op, has_tensor_input=has_tensor_input),
         dtensor_strategy=_get_dtensor_strategy(
             op, has_decomp=in_table or has_cia, has_tensor_input=has_tensor_input,

@@ -532,7 +532,7 @@ class TestDtensorAncestorCoverage:
         parent = self._make_node("registered", children=[leaf])
         output = format_tree(parent, self._DT_CFG)
         assert "MISSING" not in output
-        assert "via ancestor" in output
+        assert "registered ancestor" in output
 
     def test_missing_shown_when_no_ancestor_registered(self):
         leaf = self._make_node("missing")
@@ -558,13 +558,13 @@ class TestDtensorAncestorCoverage:
         leaf = self._make_node("missing")
         parent = self._make_node("registered", children=[leaf])
         summary = format_summary(parent, self._DT_CFG)
-        assert "dtensor: covered" in summary
+        assert "dtensor: no gaps" in summary
 
     def test_summary_uncovered_verdict(self):
         leaf = self._make_node("missing")
         parent = self._make_node("decomp-fallback", children=[leaf])
         summary = format_summary(parent, self._DT_CFG)
-        assert "1 uncovered" in summary
+        assert "1 missing" in summary
 
     def test_summary_no_verdict_without_dtensor(self):
         leaf = self._make_node("missing")

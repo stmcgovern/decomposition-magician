@@ -11,7 +11,10 @@ import torch
 from torch._ops import OpOverload
 from torch.utils._python_dispatch import TorchDispatchMode
 
-from decomp_magician.classify import DecompType, OpClass, classify, is_dtensor_gap, is_dtensor_intercept
+from decomp_magician.classify import (
+    DecompType, OpClass, _get_inductor_table, classify,
+    is_dtensor_gap, is_dtensor_intercept,
+)
 
 
 def op_display_name(op) -> str:
@@ -98,31 +101,6 @@ def _get_decomp_fn(op: OpOverload, compile: bool = False):
     if op._can_decompose():
         return op.decompose
     return None
-
-
-_inductor_table_cache: dict | None = None
-
-
-def _get_inductor_table() -> dict:
-    """Lazily load and cache the inductor decomposition table."""
-    global _inductor_table_cache
-    if _inductor_table_cache is not None:
-        return _inductor_table_cache
-
-    try:
-        from torch._inductor.decomposition import select_decomp_table
-        _inductor_table_cache = select_decomp_table()
-    except Exception:
-        import warnings
-        warnings.warn(
-            "Could not load inductor decomposition table — "
-            "compile mode will fall back to standard table.",
-            stacklevel=2,
-        )
-        from torch._decomp import decomposition_table
-        _inductor_table_cache = dict(decomposition_table)
-
-    return _inductor_table_cache
 
 
 @dataclass(frozen=True)
@@ -403,7 +381,6 @@ def _trace_decomp_uncached(
     """Run the decomposition and record which ops are called (no caching).
 
     Input strategies (tried in order, first success wins):
-    0. OpInfo sample inputs from PyTorch's test infrastructure (curated, high confidence)
     1. Default meta tensor shapes ([2,3,4,4] for general, 1D for index, bool for masks)
     2. Flipped booleans (e.g. half_to_float=True needs half input)
     3. Filled optional scalars (e.g. clamp needs min or max non-None)
@@ -412,9 +389,11 @@ def _trace_decomp_uncached(
     6. Alternative shapes via _ALT_SHAPES — varying dimensionality (1D–5D),
        spatial sizes, and channel configurations. In this mode, "weight" args
        get the full shape (for conv ops) and optional "bias" is set to None.
+    7. OpInfo sample inputs from PyTorch's test infrastructure (curated, high confidence)
 
     Steps 1-5 use heuristic meta tensor args. Step 6 creates fresh args and
     does not re-apply steps 2-5 (retries are independent, not composed).
+    Step 7 is tried last because OpInfo inputs may hit specialized code paths.
     """
     decomp_fn = _get_decomp_fn(op, compile=compile)
     if decomp_fn is None:
@@ -694,7 +673,7 @@ def _get_opinfo_index() -> dict[str, list]:
 
     try:
         from torch.testing._internal.common_methods_invocations import op_db
-    except ImportError:
+    except Exception:
         _opinfo_index = {}
         return _opinfo_index
 
@@ -869,6 +848,10 @@ def build_tree(
 
     # Leaf or depth exhausted — no children
     if cls.decomp_type == DecompType.LEAF or depth == 0:
+        return DecompNode(op=op, classification=cls)
+
+    # In compile mode, inductor-kept ops are intentional leaves
+    if compile and cls.inductor_kept:
         return DecompNode(op=op, classification=cls)
 
     # Cycle detection: if this op is already an ancestor, stop recursion

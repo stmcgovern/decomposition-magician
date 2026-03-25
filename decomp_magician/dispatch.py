@@ -73,11 +73,6 @@ class DispatchInfo:
         """Has non-fallthrough autograd entry (any type)."""
         return self.autograd_type not in (AutogradType.NONE, AutogradType.FALLTHROUGH)
 
-    @property
-    def differs_under_inference_mode(self) -> bool:
-        """Op behaves differently under inference_mode vs no_grad (has ADIOV kernel)."""
-        return self.has_adiov
-
 
 _AUTOGRAD_KEY = "AutogradCPU"
 _ADIOV_KEY = "ADInplaceOrView"
@@ -160,32 +155,3 @@ def get_dispatch_info_cached(op: OpOverload) -> DispatchInfo:
     return result
 
 
-def format_dispatch_short(info: DispatchInfo) -> str:
-    """Short annotation string for dispatch info: AG:type, ADIOV:yes/no."""
-    parts = []
-    ag_labels = {
-        "autograd_kernel": "AG:redispatch",
-        "math_kernel": "AG:terminal",
-        "fallthrough": "AG:fallthrough",
-        "other": "AG:other",
-        "none": "AG:none",
-    }
-    parts.append(ag_labels.get(info.autograd_type, f"AG:{info.autograd_type}"))
-    if info.has_adiov:
-        parts.append("ADIOV:yes")
-    return ", ".join(parts)
-
-
-def format_dispatch_detail(info: DispatchInfo) -> str:
-    """Multi-line dispatch info for verbose output."""
-    lines = [f"  dispatch: {info.autograd_type}"]
-    if info.autograd_entry:
-        lines.append(f"    AutogradCPU: [{info.autograd_entry.tag}]"
-                      f"{' (fallthrough)' if info.autograd_entry.is_fallthrough else ''}")
-    if info.adiov_entry:
-        lines.append(f"    ADInplaceOrView: [{info.adiov_entry.tag}]"
-                      f"{' (fallthrough)' if info.adiov_entry.is_fallthrough else ''}")
-    if info.dense_entry:
-        lines.append(f"    CPU: [{info.dense_entry.tag}]"
-                      f"{' (fallthrough)' if info.dense_entry.is_fallthrough else ''}")
-    return "\n".join(lines)
