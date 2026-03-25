@@ -224,14 +224,14 @@ def tree_to_dict(node: DecompNode, *, include_dtensor: bool = False) -> dict:
     return d
 
 
-def leaves_to_dict(node: DecompNode) -> dict:
+def leaves_to_dict(node: DecompNode, *, include_dtensor: bool = False) -> dict:
     """Convert leaf frontier to a JSON-serializable dict."""
     root_name = op_display_name(node.op)
 
     if not node.children:
         return {"op": root_name, "decomp_type": DecompType.LEAF, "leaves": []}
 
-    lf = collect_leaf_frontier(node)
+    lf = collect_leaf_frontier(node, check_dtensor=include_dtensor)
 
     leaves = []
     for name, count in lf.counts.most_common():

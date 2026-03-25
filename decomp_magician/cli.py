@@ -248,7 +248,7 @@ def _run_tree(op, resolved_name: str, args, cfg: FormatConfig) -> int:
 
     if args.json:
         if args.leaves:
-            d = leaves_to_dict(node)
+            d = leaves_to_dict(node, include_dtensor=cfg.show_dtensor)
             if cfg.show_dispatch or cfg.show_mode_sensitivity:
                 d = enrich_leaves_with_dispatch(d, node)
             if args.target_opset:

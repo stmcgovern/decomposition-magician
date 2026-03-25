@@ -588,25 +588,25 @@ class TestDtensorAncestorCoverage:
     def test_leaves_shows_uncovered(self):
         leaf = self._make_node("missing")
         parent = self._make_node("decomp-fallback", children=[leaf])
-        output = format_leaves(parent, _CFG)
+        output = format_leaves(parent, self._DT_CFG)
         assert "MISSING" in output
 
     def test_leaves_hides_covered(self):
         leaf = self._make_node("missing")
         parent = self._make_node("registered", children=[leaf])
-        output = format_leaves(parent, _CFG)
+        output = format_leaves(parent, self._DT_CFG)
         assert "MISSING" not in output
 
     def test_json_leaves_uncovered_flag(self):
         leaf = self._make_node("missing")
         parent = self._make_node("decomp-fallback", children=[leaf])
-        d = leaves_to_dict(parent)
+        d = leaves_to_dict(parent, include_dtensor=True)
         assert any(entry.get("dtensor_uncovered") for entry in d["leaves"])
 
     def test_json_leaves_no_flag_when_covered(self):
         leaf = self._make_node("missing")
         parent = self._make_node("registered", children=[leaf])
-        d = leaves_to_dict(parent)
+        d = leaves_to_dict(parent, include_dtensor=True)
         assert not any(entry.get("dtensor_uncovered") for entry in d["leaves"])
 
     def test_cli_dtensor_decomposable_root_not_missing(self, capsys):

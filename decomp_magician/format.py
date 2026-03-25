@@ -173,7 +173,7 @@ def format_leaves(
     if not node.children:
         return f"{_c(cfg, _DIM, root_name)}  [leaf, no decomposition]"
 
-    lf = collect_leaf_frontier(node)
+    lf = collect_leaf_frontier(node, check_dtensor=cfg.show_dtensor)
 
     leaf_dispatch: dict = {}
     if cfg.show_dispatch or cfg.show_mode_sensitivity:
