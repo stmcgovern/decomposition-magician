@@ -141,6 +141,100 @@ class TestDot:
         assert _COLORS["kept"]["fill"] in output
 
 
+class TestMermaidSyntax:
+    """Validate Mermaid output is syntactically correct for rendering."""
+
+    def test_no_unquoted_special_chars(self):
+        """Node labels with special chars (×, <br/>) must be quoted."""
+        node = build_tree(torch.ops.aten._native_batch_norm_legit.default, depth=1)
+        output = format_mermaid(node)
+        for line in output.split("\n"):
+            stripped = line.strip()
+            if "×" in stripped or "<br/>" in stripped:
+                # Must have quotes around the label
+                assert '"' in stripped, f"Unquoted special chars: {stripped}"
+
+    def test_all_edge_endpoints_are_defined_nodes(self):
+        """Every node ID used in an edge (source and target) must be defined."""
+        import re
+        node = build_tree(torch.ops.aten.addcmul.default)
+        output = format_mermaid(node)
+        defined = set()
+        edges = []
+        for line in output.split("\n"):
+            stripped = line.strip()
+            # Node definition: nX[...] or nX([...])
+            m = re.match(r'(n\d+)\s*[\[\(]', stripped)
+            if m and "-->" not in stripped:
+                defined.add(m.group(1))
+            m_edge = re.match(r'(n\d+)\s*-->\s*(n\d+)', stripped)
+            if m_edge:
+                edges.append((m_edge.group(1), m_edge.group(2)))
+        assert len(edges) > 0, "No edges found"
+        for src, dst in edges:
+            assert src in defined, f"Edge source {src} not defined"
+            assert dst in defined, f"Edge target {dst} not defined"
+
+    def test_consistent_node_count(self):
+        """Number of node definitions should match tree size."""
+        node = build_tree(torch.ops.aten.addcmul.default, depth=1)
+        output = format_mermaid(node)
+
+        def count_tree_nodes(n):
+            return 1 + sum(count_tree_nodes(c) for c in n.children)
+
+        tree_size = count_tree_nodes(node)
+        # Count lines that define nodes (contain [ or ([)
+        node_lines = [line for line in output.split("\n")
+                       if line.strip().startswith("n") and
+                       ("[" in line or "(" in line) and "-->" not in line]
+        assert len(node_lines) == tree_size
+
+    def test_edge_count_matches_children(self):
+        """Number of edges should equal total children across all nodes."""
+        node = build_tree(torch.ops.aten.addcmul.default, depth=1)
+        output = format_mermaid(node)
+
+        def count_edges_in_tree(n):
+            return len(n.children) + sum(count_edges_in_tree(c) for c in n.children)
+
+        expected_edges = count_edges_in_tree(node)
+        actual_edges = sum(1 for line in output.split("\n") if "-->" in line)
+        assert actual_edges == expected_edges
+
+
+class TestDotSyntax:
+    """Validate DOT output is syntactically correct for Graphviz."""
+
+    def test_balanced_braces(self):
+        """DOT output should have balanced curly braces."""
+        node = build_tree(torch.ops.aten.addcmul.default)
+        output = format_dot(node)
+        assert output.count("{") == output.count("}")
+
+    def test_all_attributes_quoted(self):
+        """All DOT node attribute values should be quoted."""
+        node = build_tree(torch.ops.aten.addcmul.default)
+        output = format_dot(node)
+        import re
+        for line in output.split("\n"):
+            # Match attribute assignments like key="value"
+            attrs = re.findall(r'(\w+)=("[^"]*")', line)
+            if "label=" in line:
+                assert any(k == "label" for k, v in attrs), f"Unquoted label in: {line}"
+
+    def test_node_edge_consistency(self):
+        """Every edge target must be a defined node."""
+        node = build_tree(torch.ops.aten.addcmul.default)
+        output = format_dot(node)
+        import re
+        defined = set(re.findall(r'^\s+(n\d+)\s+\[', output, re.MULTILINE))
+        edges = re.findall(r'(n\d+)\s*->\s*(n\d+)', output)
+        for src, dst in edges:
+            assert src in defined, f"Edge source {src} not defined"
+            assert dst in defined, f"Edge target {dst} not defined"
+
+
 class TestCliFlags:
     def test_mermaid_flag(self, capsys):
         assert main(["addcmul", "--depth", "1", "--mermaid"]) == 0
@@ -163,6 +257,16 @@ class TestCliFlags:
         captured = capsys.readouterr()
         assert "graph TD" in captured.out
 
+    def test_compile_mermaid_kept_class_applied(self):
+        """In compile mode, inductor-kept terminal nodes get the 'kept' class."""
+        node = build_tree(torch.ops.aten._native_batch_norm_legit.default,
+                          depth=1, compile=True)
+        output = format_mermaid(node)
+        assert "class " in output
+        # Find kept class line and verify it references node IDs
+        kept_lines = [line for line in output.split("\n") if "class " in line and " kept" in line]
+        assert len(kept_lines) > 0, "No kept class assignments in compile mode"
+
     def test_mermaid_usage_hint(self, capsys):
         """Mermaid output should include usage hint on stderr."""
         main(["addcmul", "--depth", "1", "--mermaid"])
@@ -175,3 +279,20 @@ class TestCliFlags:
         main(["addcmul", "--depth", "1", "--dot"])
         captured = capsys.readouterr()
         assert "dot -T" in captured.err
+
+    def test_mermaid_deep_tree(self, capsys):
+        """Mermaid output should handle deep trees without errors."""
+        assert main(["softmax", "--mermaid"]) == 0
+        out = capsys.readouterr().out
+        assert "graph TD" in out
+        # Should have many nodes for a deep decomposition
+        edge_count = out.count("-->")
+        assert edge_count >= 10
+
+    def test_dot_deep_tree(self, capsys):
+        """DOT output should handle deep trees without errors."""
+        assert main(["softmax", "--dot"]) == 0
+        out = capsys.readouterr().out
+        assert "digraph decomp" in out
+        edge_count = out.count("->")
+        assert edge_count >= 10
