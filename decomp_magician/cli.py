@@ -248,7 +248,7 @@ def _run_tree(op, resolved_name: str, args, cfg: FormatConfig) -> int:
 
     if args.json:
         if args.leaves:
-            d = leaves_to_dict(node)
+            d = leaves_to_dict(node, include_dtensor=cfg.show_dtensor)
             if cfg.show_dispatch or cfg.show_mode_sensitivity:
                 d = enrich_leaves_with_dispatch(d, node)
             if args.target_opset:
@@ -257,7 +257,7 @@ def _run_tree(op, resolved_name: str, args, cfg: FormatConfig) -> int:
                     leaf["in_opset"] = is_core_aten(leaf["op"])
                 d["opset"] = args.target_opset
         else:
-            d = tree_to_dict(node)
+            d = tree_to_dict(node, include_dtensor=cfg.show_dtensor)
             if cfg.show_dispatch or cfg.show_mode_sensitivity:
                 enrich_tree_with_dispatch(d, node)
         add_untraceable_warnings(d, node)
@@ -539,11 +539,10 @@ def _run_model(args, cfg: FormatConfig) -> int:
 
     dtensor_info: dict[str, str] = {}
     if args.dtensor:
-        from decomp_magician.classify import classify as classify_op
+        from decomp_magician.classify import get_dtensor_strategy
         for name, op_obj in op_objects.items():
             try:
-                cls = classify_op(op_obj)
-                dtensor_info[name] = cls.dtensor_strategy
+                dtensor_info[name] = get_dtensor_strategy(op_obj)
             except Exception:
                 dtensor_info[name] = DtensorStrategy.MISSING
 

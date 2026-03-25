@@ -67,18 +67,12 @@ class OpClass:
     has_alias_info: bool = False
     inductor_kept: bool = False
     op_category: OpCategory = OpCategory.OTHER
-    dtensor_strategy: DtensorStrategy = DtensorStrategy.MISSING
 
     def __post_init__(self):
         if self.decomp_type not in DECOMP_TYPES:
             raise ValueError(
                 f"Invalid decomp_type {self.decomp_type!r}, "
                 f"expected one of {sorted(DECOMP_TYPES)}"
-            )
-        if self.dtensor_strategy not in DTENSOR_STRATEGIES:
-            raise ValueError(
-                f"Invalid dtensor_strategy {self.dtensor_strategy!r}, "
-                f"expected one of {sorted(DTENSOR_STRATEGIES)}"
             )
         if self.inductor_kept and self.decomp_type not in (
             DecompType.TABLE, DecompType.BOTH,
@@ -332,7 +326,7 @@ def _get_op_category(op: OpOverload, has_tensor_input: bool) -> OpCategory:
 
     Args:
         has_tensor_input: Whether the op has any tensor arguments.
-            Pre-computed by the caller — shared with _get_dtensor_strategy.
+            Pre-computed by the caller to avoid redundant schema walks.
     """
     tags = op.tags
 
@@ -363,18 +357,33 @@ def _get_op_category(op: OpOverload, has_tensor_input: bool) -> OpCategory:
     return OpCategory.OTHER
 
 
-def _get_dtensor_strategy(
-    op: OpOverload, has_decomp: bool, has_tensor_input: bool,
-) -> DtensorStrategy:
-    """Check DTensor sharding strategy registration status.
+_dtensor_cache: dict[OpOverload, DtensorStrategy] = {}
 
-    Args:
-        has_decomp: Whether the op has any decomposition (table or CIA).
-        has_tensor_input: Whether the op has any tensor arguments.
-        Both are pre-computed by classify() to avoid redundant work and
-        to make the shared dependency between OpCategory and DtensorStrategy
-        explicit.
+
+def get_dtensor_strategy(op: OpOverload) -> DtensorStrategy:
+    """Look up DTensor sharding strategy registration for an op.
+
+    Combines DTensor's own registration dicts with decomposability from
+    classify(). The result is a priority cascade:
+
+        REGISTERED      =  R            (ShardingPropagator has a handler)
+        DECOMP_FALLBACK = ¬R ∧ (F ∨ D)  (some decomposition handles it)
+        NOT_APPLICABLE  = ¬R ∧ ¬F ∧ ¬D ∧ ¬T  (unreachable by DTensor dispatch)
+        MISSING         = ¬R ∧ ¬F ∧ ¬D ∧  T  (reachable, no strategy)
+
+    where R = registered in ShardingPropagator,
+          F = DTensor's own decomp (DecompShardingStrategy),
+          D = standard decomposable (classify().decomp_type ≠ LEAF),
+          T = has tensor inputs.
+
+    Containment: MISSING ∪ NOT_APPLICABLE ⊆ {decomp_type = LEAF, no DTensor decomp}.
+
+    Results are globally cached.
     """
+    cached = _dtensor_cache.get(op)
+    if cached is not None:
+        return cached
+
     dt = _init_dtensor()
     prop = dt.propagator
     decomp_cls = dt.decomp_strategy_cls
@@ -382,27 +391,29 @@ def _get_dtensor_strategy(
     # Check registered strategies (DTensor has an explicit handler).
     # Attribute names vary across PyTorch versions, so guard each.
     if hasattr(prop, "op_strategy_funcs") and op in prop.op_strategy_funcs:
-        return DtensorStrategy.REGISTERED
-    if hasattr(prop, "op_single_dim_strategy_funcs") and op in prop.op_single_dim_strategy_funcs:
-        return DtensorStrategy.REGISTERED
-    if hasattr(prop, "op_to_rules") and op in prop.op_to_rules:
-        return DtensorStrategy.REGISTERED
-
+        result = DtensorStrategy.REGISTERED
+    elif hasattr(prop, "op_single_dim_strategy_funcs") and op in prop.op_single_dim_strategy_funcs:
+        result = DtensorStrategy.REGISTERED
+    elif hasattr(prop, "op_to_rules") and op in prop.op_to_rules:
+        result = DtensorStrategy.REGISTERED
     # Check DTensor's own decomposition awareness.
-    if decomp_cls is not None and decomp_cls.has_decomp(op):
-        return DtensorStrategy.DECOMP_FALLBACK
-
+    elif decomp_cls is not None and decomp_cls.has_decomp(op):
+        result = DtensorStrategy.DECOMP_FALLBACK
     # Ops with any decomposition (table or CIA) auto-decompose before
     # DTensor dispatch, so DTensor handles the children via fallback.
-    if has_decomp:
-        return DtensorStrategy.DECOMP_FALLBACK
-
+    # Reuse classify() instead of re-checking decomposition_table and
+    # _can_decompose() — keeps the decomposability answer in one place.
+    elif classify(op).decomp_type != DecompType.LEAF:
+        result = DtensorStrategy.DECOMP_FALLBACK
     # Factory/allocation ops have no tensor inputs, so DTensor dispatch
     # (which is input-driven via overloaded_args) can never reach them.
-    if not has_tensor_input:
-        return DtensorStrategy.NOT_APPLICABLE
+    elif not _has_tensor_input(op):
+        result = DtensorStrategy.NOT_APPLICABLE
+    else:
+        result = DtensorStrategy.MISSING
 
-    return DtensorStrategy.MISSING
+    _dtensor_cache[op] = result
+    return result
 
 
 _classify_cache: dict[OpOverload, OpClass] = {}
@@ -419,9 +430,6 @@ def classify(op: OpOverload) -> OpClass:
     if cached is not None:
         return cached
 
-    # Compute shared predicates once — these determine multiple classification axes.
-    # has_decomp: shared by DecompType and DtensorStrategy
-    # has_tensor_input: shared by OpCategory (FACTORY) and DtensorStrategy (NOT_APPLICABLE)
     from torch._decomp import decomposition_table
     in_table = op in decomposition_table
     has_cia = op._can_decompose()
@@ -437,9 +445,6 @@ def classify(op: OpOverload) -> OpClass:
         ),
         inductor_kept=op.name() in _get_inductor_kept_set(),
         op_category=_get_op_category(op, has_tensor_input=has_tensor_input),
-        dtensor_strategy=_get_dtensor_strategy(
-            op, has_decomp=in_table or has_cia, has_tensor_input=has_tensor_input,
-        ),
     )
     _classify_cache[op] = result
     return result

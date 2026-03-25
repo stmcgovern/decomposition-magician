@@ -296,12 +296,11 @@ class TestClassifyCache:
         cls2 = classify(op)
         assert cls1 is cls2
 
-    def test_classify_always_has_dtensor_strategy(self):
-        """classify() always populates dtensor_strategy (no None)."""
-        from decomp_magician.classify import classify
+    def test_get_dtensor_strategy_always_populated(self):
+        """get_dtensor_strategy() always returns a valid strategy."""
+        from decomp_magician.classify import get_dtensor_strategy
         op = torch.ops.aten.addcmul.default
-        cls = classify(op)
-        assert cls.dtensor_strategy is not None
+        assert get_dtensor_strategy(op) is not None
 
     def test_classify_returns_opclass(self):
         from decomp_magician.classify import classify

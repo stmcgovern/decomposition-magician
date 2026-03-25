@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from decomp_magician.classify import DecompType
+from decomp_magician.classify import DecompType, get_dtensor_strategy
 from decomp_magician.dispatch import DispatchInfo, get_dispatch_info_cached
 from decomp_magician.tree import (
     DecompNode,
@@ -200,7 +200,7 @@ def format_dot(node: DecompNode) -> str:
 # JSON dict conversions
 # ---------------------------------------------------------------------------
 
-def tree_to_dict(node: DecompNode) -> dict:
+def tree_to_dict(node: DecompNode, *, include_dtensor: bool = False) -> dict:
     """Convert a DecompNode tree to a JSON-serializable dict."""
     cls = node.classification
     d: dict = {
@@ -217,20 +217,21 @@ def tree_to_dict(node: DecompNode) -> dict:
     }
     if node.error:
         d["error"] = node.error
-    d["dtensor_strategy"] = cls.dtensor_strategy
+    if include_dtensor:
+        d["dtensor_strategy"] = get_dtensor_strategy(node.op)
     if node.children:
-        d["children"] = [tree_to_dict(c) for c in node.children]
+        d["children"] = [tree_to_dict(c, include_dtensor=include_dtensor) for c in node.children]
     return d
 
 
-def leaves_to_dict(node: DecompNode) -> dict:
+def leaves_to_dict(node: DecompNode, *, include_dtensor: bool = False) -> dict:
     """Convert leaf frontier to a JSON-serializable dict."""
     root_name = op_display_name(node.op)
 
     if not node.children:
         return {"op": root_name, "decomp_type": DecompType.LEAF, "leaves": []}
 
-    lf = collect_leaf_frontier(node)
+    lf = collect_leaf_frontier(node, check_dtensor=include_dtensor)
 
     leaves = []
     for name, count in lf.counts.most_common():

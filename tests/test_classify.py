@@ -135,16 +135,16 @@ class TestTags:
 
 class TestDtensorStrategy:
     def test_always_populated(self):
-        """classify() always populates dtensor_strategy."""
+        """get_dtensor_strategy() always returns a valid strategy."""
+        from decomp_magician.classify import get_dtensor_strategy
         op = torch.ops.aten.mm.default
-        cls = classify(op)
-        assert cls.dtensor_strategy is not None
+        assert get_dtensor_strategy(op) is not None
 
     def test_leaf_op_is_missing(self):
         """A true leaf op (no decomposition) should be 'missing' or 'registered'."""
+        from decomp_magician.classify import get_dtensor_strategy
         op = torch.ops.aten.mm.default
-        cls = classify(op)
-        assert cls.dtensor_strategy in ("registered", "missing", "not-applicable")
+        assert get_dtensor_strategy(op) in ("registered", "missing", "not-applicable")
 
     def test_cia_op_never_missing(self):
         """Any op with _can_decompose()=True must not be 'missing'.
@@ -155,6 +155,7 @@ class TestDtensorStrategy:
         Samples ops at runtime so the test works across PyTorch versions.
         """
         from torch._ops import OpOverload
+        from decomp_magician.classify import get_dtensor_strategy
 
         checked = 0
         for name in dir(torch.ops.aten):
@@ -167,10 +168,10 @@ class TestDtensorStrategy:
                     continue
                 if not op._can_decompose():
                     continue
-                cls = classify(op)
-                assert cls.dtensor_strategy in ("registered", "decomp-fallback"), (
+                strat = get_dtensor_strategy(op)
+                assert strat in ("registered", "decomp-fallback"), (
                     f"{op.name()} has _can_decompose()=True but "
-                    f"dtensor_strategy={cls.dtensor_strategy!r}"
+                    f"dtensor_strategy={strat!r}"
                 )
                 checked += 1
                 if checked >= 20:
@@ -186,19 +187,10 @@ class TestOpClassValidation:
         with pytest.raises(ValueError, match="Invalid decomp_type"):
             OpClass(decomp_type="Table")
 
-    def test_invalid_dtensor_strategy_raises(self):
-        with pytest.raises(ValueError, match="Invalid dtensor_strategy"):
-            OpClass(decomp_type="leaf", dtensor_strategy="registred")
-
     def test_valid_decomp_types(self):
         for dt in ("CIA", "table", "both", "leaf"):
             cls = OpClass(decomp_type=dt)
             assert cls.decomp_type == dt
-
-    def test_valid_dtensor_strategies(self):
-        for ds in ("registered", "decomp-fallback", "missing", "not-applicable"):
-            cls = OpClass(decomp_type="leaf", dtensor_strategy=ds)
-            assert cls.dtensor_strategy == ds
 
     def test_inductor_kept_requires_table_decomp(self):
         """inductor_kept only makes sense for ops in the decomposition table."""

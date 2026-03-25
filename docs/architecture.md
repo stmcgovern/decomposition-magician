@@ -197,8 +197,10 @@ class OpClass:
     is_mutable: bool
     has_alias_info: bool
     inductor_excluded: bool
-    dtensor_strategy: str | None  # "registered", "decomp-fallback", "missing", None
 ```
+
+DTensor strategy is a separate lookup via `get_dtensor_strategy(op)` — it queries the
+`ShardingPropagator` dicts and is independently cached in `_dtensor_cache`.
 
 | Field | How to compute |
 |-------|----------------|
@@ -208,7 +210,6 @@ class OpClass:
 | `is_mutable` | `op._schema.is_mutable` |
 | `has_alias_info` | `any(arg.alias_info for arg in op._schema.arguments)` |
 | `inductor_excluded` | In raw table but absent from Inductor's `select_decomp_table()` |
-| `dtensor_strategy` | Check `ShardingPropagator` dicts (lazy import, only with `--dtensor`) |
 
 ### `graph.py` — Graph Export
 

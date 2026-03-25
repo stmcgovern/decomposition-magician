@@ -516,11 +516,24 @@ class TestSourceFlag:
 class TestDtensorAncestorCoverage:
     _DT_CFG = FormatConfig(show_dtensor=True)
 
+    def setup_method(self):
+        from decomp_magician.classify import _dtensor_cache
+        self._mock_ops = []
+        self._dtensor_cache = _dtensor_cache
+
+    def teardown_method(self):
+        for op in self._mock_ops:
+            self._dtensor_cache.pop(op, None)
+
     def _make_node(self, strategy, children=()):
-        op = torch.ops.aten.mul.Tensor
+        from unittest.mock import MagicMock
+        # Create a unique mock op so _dtensor_cache maps each node independently
+        op = MagicMock(spec=torch.ops.aten.mul.Tensor)
+        op.name.return_value = "aten::mul.Tensor"
+        self._dtensor_cache[op] = strategy
+        self._mock_ops.append(op)
         cls = OpClass(
             decomp_type="leaf" if not children else "table",
-            dtensor_strategy=strategy,
         )
         return DecompNode(
             op=op, children=tuple(children), count=1,
@@ -575,25 +588,25 @@ class TestDtensorAncestorCoverage:
     def test_leaves_shows_uncovered(self):
         leaf = self._make_node("missing")
         parent = self._make_node("decomp-fallback", children=[leaf])
-        output = format_leaves(parent, _CFG)
+        output = format_leaves(parent, self._DT_CFG)
         assert "MISSING" in output
 
     def test_leaves_hides_covered(self):
         leaf = self._make_node("missing")
         parent = self._make_node("registered", children=[leaf])
-        output = format_leaves(parent, _CFG)
+        output = format_leaves(parent, self._DT_CFG)
         assert "MISSING" not in output
 
     def test_json_leaves_uncovered_flag(self):
         leaf = self._make_node("missing")
         parent = self._make_node("decomp-fallback", children=[leaf])
-        d = leaves_to_dict(parent)
+        d = leaves_to_dict(parent, include_dtensor=True)
         assert any(entry.get("dtensor_uncovered") for entry in d["leaves"])
 
     def test_json_leaves_no_flag_when_covered(self):
         leaf = self._make_node("missing")
         parent = self._make_node("registered", children=[leaf])
-        d = leaves_to_dict(parent)
+        d = leaves_to_dict(parent, include_dtensor=True)
         assert not any(entry.get("dtensor_uncovered") for entry in d["leaves"])
 
     def test_cli_dtensor_decomposable_root_not_missing(self, capsys):

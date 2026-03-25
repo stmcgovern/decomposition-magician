@@ -887,24 +887,37 @@ class LeafFrontier(NamedTuple):
     dtensor_uncovered: set[str]
 
 
-def collect_leaf_frontier(node: DecompNode) -> LeafFrontier:
-    """Walk a tree and collect the leaf frontier with propagated counts."""
+def collect_leaf_frontier(
+    node: DecompNode, *, check_dtensor: bool = False,
+) -> LeafFrontier:
+    """Walk a tree and collect the leaf frontier with propagated counts.
+
+    Args:
+        check_dtensor: If True, check DTensor coverage for each leaf.
+            Only set when --dtensor is active — avoids importing
+            torch.distributed.tensor when DTensor analysis isn't requested.
+    """
     counts = collect_leaf_counts(node)
     inductor_kept_ops: set[str] = set()
     untraceable_ops: set[str] = set()
     dtensor_uncovered_ops: set[str] = set()
 
+    if check_dtensor:
+        from decomp_magician.classify import get_dtensor_strategy
+
     def walk(n: DecompNode, ancestor_covered: bool = False) -> None:
-        covered = ancestor_covered or is_dtensor_intercept(
-            n.classification.dtensor_strategy
-        )
+        if check_dtensor:
+            dt_strat = get_dtensor_strategy(n.op)
+            covered = ancestor_covered or is_dtensor_intercept(dt_strat)
+        else:
+            covered = ancestor_covered
         if not n.children:
             name = op_display_name(n.op)
             if n.classification.inductor_kept:
                 inductor_kept_ops.add(name)
             if not n.traceable:
                 untraceable_ops.add(name)
-            if is_dtensor_gap(n.classification.dtensor_strategy) and not covered:
+            if check_dtensor and is_dtensor_gap(dt_strat) and not covered:
                 dtensor_uncovered_ops.add(name)
             return
         for c in n.children:
@@ -921,6 +934,8 @@ def collect_untraceable_errors(node: DecompNode) -> list[tuple[str, str]]:
 
     def walk(n: DecompNode) -> None:
         if not n.traceable:
+            # n.error is guaranteed non-None by DecompNode invariant:
+            # ¬traceable → error is not None (checked in __post_init__)
             name = op_display_name(n.op)
             if name not in seen:
                 seen.add(name)

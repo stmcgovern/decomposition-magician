@@ -15,6 +15,7 @@ from decomp_magician.classify import (
     DECOMP_TYPES,
     DecompType,
     DtensorStrategy,
+    get_dtensor_strategy,
     is_dtensor_gap,
     is_dtensor_intercept,
 )
@@ -88,8 +89,8 @@ def format_tree(
 
     lines.append(line)
 
-    this_has_dtensor = ancestor_has_dtensor or is_dtensor_intercept(
-        node.classification.dtensor_strategy
+    this_has_dtensor = ancestor_has_dtensor or (
+        cfg.show_dtensor and is_dtensor_intercept(get_dtensor_strategy(node.op))
     )
 
     child_prefix = prefix + ("    " if is_last else "│   ") if not is_root else ""
@@ -143,15 +144,16 @@ def _format_annotation(
                 annotation += "  " + _c(cfg, _GREEN, "mode-invariant")
 
     if cfg.show_dtensor:
-        if cls.dtensor_strategy == DtensorStrategy.REGISTERED:
+        dt_strat = get_dtensor_strategy(node.op)
+        if dt_strat == DtensorStrategy.REGISTERED:
             annotation += "  " + _c(cfg, _GREEN, "dtensor: registered")
-        elif cls.dtensor_strategy == DtensorStrategy.DECOMP_FALLBACK:
+        elif dt_strat == DtensorStrategy.DECOMP_FALLBACK:
             annotation += "  " + _c(cfg, _DIM, "dtensor: decomp-fallback")
-        elif cls.dtensor_strategy == DtensorStrategy.NOT_APPLICABLE:
+        elif dt_strat == DtensorStrategy.NOT_APPLICABLE:
             annotation += "  " + _c(cfg, _DIM, "dtensor: n/a")
-        elif cls.dtensor_strategy == DtensorStrategy.MISSING and ancestor_has_dtensor:
+        elif dt_strat == DtensorStrategy.MISSING and ancestor_has_dtensor:
             annotation += "  " + _c(cfg, _DIM, "dtensor: registered ancestor")
-        elif cls.dtensor_strategy == DtensorStrategy.MISSING:
+        elif dt_strat == DtensorStrategy.MISSING:
             annotation += "  " + _c(cfg, _RED, "dtensor: MISSING")
 
     return annotation
@@ -171,7 +173,7 @@ def format_leaves(
     if not node.children:
         return f"{_c(cfg, _DIM, root_name)}  [leaf, no decomposition]"
 
-    lf = collect_leaf_frontier(node)
+    lf = collect_leaf_frontier(node, check_dtensor=cfg.show_dtensor)
 
     leaf_dispatch: dict = {}
     if cfg.show_dispatch or cfg.show_mode_sensitivity:
@@ -240,13 +242,14 @@ def format_summary(node: DecompNode, cfg: FormatConfig) -> str:
         counts[dt] = counts.get(dt, 0) + 1
         if n.classification.inductor_kept:
             inductor_kept += 1
-        if is_dtensor_gap(n.classification.dtensor_strategy) and not ancestor_covered:
+        dt_strat = get_dtensor_strategy(n.op) if cfg.show_dtensor else None
+        if dt_strat is not None and is_dtensor_gap(dt_strat) and not ancestor_covered:
             dtensor_missing += 1
         if not n.traceable:
             untraceable_nodes += 1
             untraceable_names.add(op_display_name(n.op))
-        covered = ancestor_covered or is_dtensor_intercept(
-            n.classification.dtensor_strategy
+        covered = ancestor_covered or (
+            dt_strat is not None and is_dtensor_intercept(dt_strat)
         )
         for c in n.children:
             walk(c, covered)
@@ -648,6 +651,8 @@ def format_verbose(node: DecompNode, cfg: FormatConfig, indent: int = 0) -> str:
     lines.append(f"{prefix}  autograd_type: {dinfo.autograd_type}")
     lines.append(f"{prefix}  has_adiov: {dinfo.has_adiov}")
     lines.append(f"{prefix}  mode_sensitive: {dinfo.mode_sensitive}")
+    if cfg.show_dtensor:
+        lines.append(f"{prefix}  dtensor_strategy: {get_dtensor_strategy(node.op)}")
     for child in node.children:
         lines.append(format_verbose(child, cfg, indent + 1))
     return "\n".join(lines)
