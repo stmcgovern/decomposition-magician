@@ -109,8 +109,8 @@ class TestDispatchFlags:
         assert main(["addcmul", "--mode-sensitivity", "--depth", "1"]) == 0
         out = capsys.readouterr().out
         # Tree node lines have box-drawing chars or are the root line
-        tree_lines = [l for l in out.split("\n")
-                       if ("├──" in l or "└──" in l or l.startswith("aten."))]
+        tree_lines = [line for line in out.split("\n")
+                       if ("├──" in line or "└──" in line or line.startswith("aten."))]
         assert len(tree_lines) >= 2, f"Expected tree lines, got: {out}"
         for line in tree_lines:
             assert "mode-sensitive" in line or "mode-invariant" in line, (
@@ -661,22 +661,22 @@ class TestHelpOutput:
 class TestCompileTreeCorrectness:
     def test_compile_leaves_differ_from_full(self, capsys):
         """Compile-mode leaves should differ from full-mode leaves for ops with inductor-kept children."""
-        assert main(["layer_norm", "--leaves", "--json"]) == 0
+        assert main(["softmax", "--leaves", "--json"]) == 0
         full = json.loads(capsys.readouterr().out)
-        assert main(["layer_norm", "--leaves", "--compile", "--json"]) == 0
+        assert main(["softmax", "--leaves", "--compile", "--json"]) == 0
         compiled = json.loads(capsys.readouterr().out)
-        full_ops = {l["op"] for l in full["leaves"]}
-        compiled_ops = {l["op"] for l in compiled["leaves"]}
+        full_ops = {entry["op"] for entry in full["leaves"]}
+        compiled_ops = {entry["op"] for entry in compiled["leaves"]}
         # Full mode decomposes to prims, compile mode stops at inductor-kept aten ops
         assert full_ops != compiled_ops
         # Compile mode should have inductor-kept leaves
-        assert any(l.get("inductor_kept") for l in compiled["leaves"])
+        assert any(entry.get("inductor_kept") for entry in compiled["leaves"])
 
     def test_compile_tree_shallower(self, capsys):
         """Compile-mode tree should have fewer nodes than full-mode tree."""
-        assert main(["layer_norm", "--json"]) == 0
+        assert main(["softmax", "--json"]) == 0
         full = json.loads(capsys.readouterr().out)
-        assert main(["layer_norm", "--compile", "--json"]) == 0
+        assert main(["softmax", "--compile", "--json"]) == 0
         compiled = json.loads(capsys.readouterr().out)
 
         def count_nodes(d):

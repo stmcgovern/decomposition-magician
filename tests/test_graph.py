@@ -185,9 +185,9 @@ class TestMermaidSyntax:
 
         tree_size = count_tree_nodes(node)
         # Count lines that define nodes (contain [ or ([)
-        node_lines = [l for l in output.split("\n")
-                       if l.strip().startswith("n") and
-                       ("[" in l or "(" in l) and "-->" not in l]
+        node_lines = [line for line in output.split("\n")
+                       if line.strip().startswith("n") and
+                       ("[" in line or "(" in line) and "-->" not in line]
         assert len(node_lines) == tree_size
 
     def test_edge_count_matches_children(self):
@@ -199,7 +199,7 @@ class TestMermaidSyntax:
             return len(n.children) + sum(count_edges_in_tree(c) for c in n.children)
 
         expected_edges = count_edges_in_tree(node)
-        actual_edges = sum(1 for l in output.split("\n") if "-->" in l)
+        actual_edges = sum(1 for line in output.split("\n") if "-->" in line)
         assert actual_edges == expected_edges
 
 
@@ -264,7 +264,7 @@ class TestCliFlags:
         output = format_mermaid(node)
         assert "class " in output
         # Find kept class line and verify it references node IDs
-        kept_lines = [l for l in output.split("\n") if "class " in l and " kept" in l]
+        kept_lines = [line for line in output.split("\n") if "class " in line and " kept" in line]
         assert len(kept_lines) > 0, "No kept class assignments in compile mode"
 
     def test_mermaid_usage_hint(self, capsys):
@@ -282,7 +282,7 @@ class TestCliFlags:
 
     def test_mermaid_deep_tree(self, capsys):
         """Mermaid output should handle deep trees without errors."""
-        assert main(["layer_norm", "--mermaid"]) == 0
+        assert main(["softmax", "--mermaid"]) == 0
         out = capsys.readouterr().out
         assert "graph TD" in out
         # Should have many nodes for a deep decomposition
@@ -291,7 +291,7 @@ class TestCliFlags:
 
     def test_dot_deep_tree(self, capsys):
         """DOT output should handle deep trees without errors."""
-        assert main(["layer_norm", "--dot"]) == 0
+        assert main(["softmax", "--dot"]) == 0
         out = capsys.readouterr().out
         assert "digraph decomp" in out
         edge_count = out.count("->")
