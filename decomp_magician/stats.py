@@ -8,18 +8,33 @@ from dataclasses import dataclass
 
 from decomp_magician.classify import (
     DtensorStrategy, classify, get_all_decomposable_ops,
-    is_dtensor_gap, is_dtensor_intercept, is_out_variant,
+    get_dtensor_strategy, is_dtensor_gap, is_dtensor_intercept, is_out_variant,
 )
 from decomp_magician.tree import DecompNode, build_tree, op_display_name
 
 
 @dataclass(frozen=True)
 class DtensorStats:
-    """DTensor coverage statistics across all decomposable ops."""
+    """DTensor coverage statistics across all decomposable ops.
+
+    Two groups of fields with different denominators:
+
+    Per-op partition (static, verified by StatsResult invariant #4):
+      registered + decomp_fallback + missing + not_applicable = classified
+      Each op is counted exactly once based on get_dtensor_strategy().
+
+    Per-tree coverage (dynamic, approximate — depends on tracing):
+      fully_covered + has_gaps = traceable ops with children
+      Walks each successfully traced decomposition tree and checks whether
+      all leaf paths reach a DTensor-registered ancestor. Approximate because
+      the tree structure depends on which code paths synthetic inputs exercise.
+    """
+    # Per-op partition
     registered: int  # ops with a direct DTensor strategy
     decomp_fallback: int  # ops handled via decomposition tracing
     missing: int  # ops with no DTensor strategy at all
     not_applicable: int  # ops with no tensor inputs (unreachable by DTensor dispatch)
+    # Per-tree coverage
     fully_covered: int  # traceable ops where all leaf paths hit a registered ancestor
     has_gaps: int  # traceable ops with at least one uncovered leaf path
     top_uncovered: list[tuple[str, int]]  # most common uncovered leaf ops
@@ -92,8 +107,9 @@ def compute_stats(
     Args:
         compile: If True, treat inductor-kept ops as leaves.
         dtensor: If True, include DTensor coverage analysis in the result.
-                 Classification always includes DTensor strategy (it's intrinsic);
-                 this flag controls whether to aggregate and report it.
+                 DTensor strategy is a separate lookup (get_dtensor_strategy),
+                 not part of classify(). This flag controls whether to query
+                 and aggregate it.
     """
     all_ops = get_all_decomposable_ops()
     by_type: Counter[str] = Counter()
@@ -130,7 +146,7 @@ def compute_stats(
             inductor_kept += 1
 
         if dtensor:
-            dt_by_strategy[cls.dtensor_strategy] += 1
+            dt_by_strategy[get_dtensor_strategy(op)] += 1
 
         try:
             with warnings.catch_warnings():
@@ -209,11 +225,10 @@ def _collect_uncovered_dtensor(node: DecompNode) -> set[str]:
     uncovered: set[str] = set()
 
     def walk(n: DecompNode, ancestor_covered: bool = False) -> None:
-        covered = ancestor_covered or is_dtensor_intercept(
-            n.classification.dtensor_strategy
-        )
+        dt_strat = get_dtensor_strategy(n.op)
+        covered = ancestor_covered or is_dtensor_intercept(dt_strat)
         if not n.children:
-            if is_dtensor_gap(n.classification.dtensor_strategy) and not covered:
+            if is_dtensor_gap(dt_strat) and not covered:
                 uncovered.add(op_display_name(n.op))
             return
         for c in n.children:

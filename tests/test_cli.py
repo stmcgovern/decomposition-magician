@@ -516,11 +516,24 @@ class TestSourceFlag:
 class TestDtensorAncestorCoverage:
     _DT_CFG = FormatConfig(show_dtensor=True)
 
+    def setup_method(self):
+        from decomp_magician.classify import _dtensor_cache
+        self._mock_ops = []
+        self._dtensor_cache = _dtensor_cache
+
+    def teardown_method(self):
+        for op in self._mock_ops:
+            self._dtensor_cache.pop(op, None)
+
     def _make_node(self, strategy, children=()):
-        op = torch.ops.aten.mul.Tensor
+        from unittest.mock import MagicMock
+        # Create a unique mock op so _dtensor_cache maps each node independently
+        op = MagicMock(spec=torch.ops.aten.mul.Tensor)
+        op.name.return_value = "aten::mul.Tensor"
+        self._dtensor_cache[op] = strategy
+        self._mock_ops.append(op)
         cls = OpClass(
             decomp_type="leaf" if not children else "table",
-            dtensor_strategy=strategy,
         )
         return DecompNode(
             op=op, children=tuple(children), count=1,

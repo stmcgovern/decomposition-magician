@@ -894,17 +894,18 @@ def collect_leaf_frontier(node: DecompNode) -> LeafFrontier:
     untraceable_ops: set[str] = set()
     dtensor_uncovered_ops: set[str] = set()
 
+    from decomp_magician.classify import get_dtensor_strategy
+
     def walk(n: DecompNode, ancestor_covered: bool = False) -> None:
-        covered = ancestor_covered or is_dtensor_intercept(
-            n.classification.dtensor_strategy
-        )
+        dt_strat = get_dtensor_strategy(n.op)
+        covered = ancestor_covered or is_dtensor_intercept(dt_strat)
         if not n.children:
             name = op_display_name(n.op)
             if n.classification.inductor_kept:
                 inductor_kept_ops.add(name)
             if not n.traceable:
                 untraceable_ops.add(name)
-            if is_dtensor_gap(n.classification.dtensor_strategy) and not covered:
+            if is_dtensor_gap(dt_strat) and not covered:
                 dtensor_uncovered_ops.add(name)
             return
         for c in n.children:
