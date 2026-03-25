@@ -104,6 +104,19 @@ class TestDispatchFlags:
         out = capsys.readouterr().out
         assert "mode-sensitive" in out or "mode-invariant" in out
 
+    def test_mode_sensitivity_output_is_per_node(self, capsys):
+        """--mode-sensitivity should annotate each tree node."""
+        assert main(["addcmul", "--mode-sensitivity", "--depth", "1"]) == 0
+        out = capsys.readouterr().out
+        # Tree node lines have box-drawing chars or are the root line
+        tree_lines = [l for l in out.split("\n")
+                       if ("├──" in l or "└──" in l or l.startswith("aten."))]
+        assert len(tree_lines) >= 2, f"Expected tree lines, got: {out}"
+        for line in tree_lines:
+            assert "mode-sensitive" in line or "mode-invariant" in line, (
+                f"Missing mode annotation on tree node: {line}"
+            )
+
     def test_dispatch_table_leaves_json(self, capsys):
         assert main(["addcmul", "--dispatch-table", "--leaves", "--json"]) == 0
         data = json.loads(capsys.readouterr().out)
@@ -614,3 +627,75 @@ class TestDtensorAncestorCoverage:
         out = capsys.readouterr().out
         first_line = out.strip().split("\n")[0]
         assert "MISSING" not in first_line
+
+
+class TestVerboseDtensor:
+    def test_verbose_dtensor_shows_strategy(self, capsys):
+        """--verbose --dtensor should show dtensor_strategy per node."""
+        assert main(["addcmul", "--verbose", "--dtensor", "--depth", "0"]) == 0
+        out = capsys.readouterr().out
+        assert "dtensor_strategy:" in out
+
+    def test_verbose_without_dtensor_no_strategy(self, capsys):
+        """--verbose without --dtensor should not show dtensor_strategy."""
+        assert main(["addcmul", "--verbose", "--depth", "0"]) == 0
+        out = capsys.readouterr().out
+        assert "dtensor_strategy" not in out
+
+
+class TestHelpOutput:
+    def test_help_flag(self, capsys):
+        """--help should exit 0 and show all flags."""
+        with pytest.raises(SystemExit) as exc_info:
+            main(["--help"])
+        assert exc_info.value.code == 0
+        out = capsys.readouterr().out
+        # All major flags should appear in help
+        for flag in ["--stats", "--compile", "--dtensor", "--leaves", "--reverse",
+                      "--mermaid", "--dot", "--json", "--verbose", "--source",
+                      "--backward", "--pure", "--adiov", "--dispatch-table",
+                      "--mode-sensitivity", "--diff", "--model", "--depth"]:
+            assert flag in out, f"Missing flag in --help: {flag}"
+
+
+class TestCompileTreeCorrectness:
+    def test_compile_leaves_differ_from_full(self, capsys):
+        """Compile-mode leaves should differ from full-mode leaves for ops with inductor-kept children."""
+        assert main(["layer_norm", "--leaves", "--json"]) == 0
+        full = json.loads(capsys.readouterr().out)
+        assert main(["layer_norm", "--leaves", "--compile", "--json"]) == 0
+        compiled = json.loads(capsys.readouterr().out)
+        full_ops = {l["op"] for l in full["leaves"]}
+        compiled_ops = {l["op"] for l in compiled["leaves"]}
+        # Full mode decomposes to prims, compile mode stops at inductor-kept aten ops
+        assert full_ops != compiled_ops
+        # Compile mode should have inductor-kept leaves
+        assert any(l.get("inductor_kept") for l in compiled["leaves"])
+
+    def test_compile_tree_shallower(self, capsys):
+        """Compile-mode tree should have fewer nodes than full-mode tree."""
+        assert main(["layer_norm", "--json"]) == 0
+        full = json.loads(capsys.readouterr().out)
+        assert main(["layer_norm", "--compile", "--json"]) == 0
+        compiled = json.loads(capsys.readouterr().out)
+
+        def count_nodes(d):
+            return 1 + sum(count_nodes(c) for c in d.get("children", []))
+
+        assert count_nodes(compiled) < count_nodes(full)
+
+
+class TestStatsCombinations:
+    def test_stats_dtensor_compile(self, capsys):
+        """--stats --dtensor --compile should work together."""
+        assert main(["--stats", "--dtensor", "--compile"]) == 0
+        out = capsys.readouterr().out
+        assert "DTensor coverage" in out
+        assert "compile" in out
+
+    def test_stats_dtensor_compile_json(self, capsys):
+        """--stats --dtensor --compile --json should include both fields."""
+        assert main(["--stats", "--dtensor", "--compile", "--json"]) == 0
+        data = json.loads(capsys.readouterr().out)
+        assert "dtensor" in data
+        assert data["dtensor"]["registered"] > 0

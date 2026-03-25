@@ -109,6 +109,27 @@ class TestPrimsNamespace:
         assert "aten" in result.name()
 
 
+class TestBrokenOverloads:
+    def test_add_skips_broken_default(self):
+        """aten.add.default is a Python stub with no C++ operator.
+        Resolver should skip it and pick aten.add.Tensor instead."""
+        result = resolve_op("add")
+        assert isinstance(result, OpOverload)
+        assert result is torch.ops.aten.add.Tensor
+
+    def test_aten_dot_add_skips_broken_default(self):
+        """'aten.add' should also skip the broken default overload."""
+        result = resolve_op("aten.add")
+        assert isinstance(result, OpOverload)
+        assert result is torch.ops.aten.add.Tensor
+
+    def test_mul_skips_broken_default(self):
+        """aten.mul.default is also a Python stub."""
+        result = resolve_op("mul")
+        assert isinstance(result, OpOverload)
+        assert result is torch.ops.aten.mul.Tensor
+
+
 class TestDottedOverload:
     def test_opname_dot_overload(self, dotted_overload_op):
         """'name.overload' should resolve to the correct aten op."""

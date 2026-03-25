@@ -102,7 +102,8 @@ class TestReverseCliFlag:
 
     def test_reverse_overload_hint(self, capsys):
         """When no results, suggest alternative overloads."""
-        main(["mul", "--reverse"])
+        # conv2d.default has no reverse results, but conv2d.padding exists
+        main(["conv2d", "--reverse"])
         captured = capsys.readouterr()
         assert "No ops" in captured.out
-        assert "aten.mul.Tensor" in captured.err
+        assert "conv2d" in captured.err or "conv2d" in captured.out

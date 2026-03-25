@@ -89,25 +89,45 @@ def _try_packet(ns: str, opname: str) -> OpOverload | list[str] | None:
     if not overloads:
         return None
 
-    # Prefer .default if it exists
+    # Prefer .default if it exists and is a real operator
     if "default" in overloads:
-        return getattr(packet, "default")
+        op = getattr(packet, "default")
+        if _is_real_op(op):
+            return op
 
-    # Single overload — use it
-    if len(overloads) == 1:
-        return getattr(packet, overloads[0])
+    # Filter out _out variants and broken ops
+    primary = [ol for ol in overloads
+               if not ol.endswith("_out") and ol != "out"
+               and _is_real_op(getattr(packet, ol))]
 
-    # Filter out _out variants (write-to-preallocated-output) — never what users mean
-    primary = [ol for ol in overloads if not ol.endswith("_out") and ol != "out"]
     if len(primary) == 1:
         return getattr(packet, primary[0])
 
-    # Multiple non-default, non-out overloads — pick first, caller prints a note
+    # Multiple valid overloads — pick first, caller prints a note
     if primary:
         return getattr(packet, primary[0])
 
-    # Only _out overloads remain — use first
-    return getattr(packet, overloads[0])
+    # Try _out variants as last resort
+    out_overloads = [ol for ol in overloads if _is_real_op(getattr(packet, ol))]
+    if out_overloads:
+        return getattr(packet, out_overloads[0])
+
+    return None
+
+
+def _is_real_op(op: OpOverload) -> bool:
+    """Check if an OpOverload is backed by a real C++ operator.
+
+    Some overloads (e.g. aten.add.default, aten.add.int) exist as Python
+    stubs but have no C++ dispatch entry, causing RuntimeError on use.
+    """
+    try:
+        torch._C._dispatch_has_kernel_for_dispatch_key(
+            op.name(), torch._C.DispatchKey.CompositeImplicitAutograd,
+        )
+        return True
+    except RuntimeError:
+        return False
 
 
 def _substring_search(query: str) -> list[str]:

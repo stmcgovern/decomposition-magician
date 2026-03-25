@@ -80,3 +80,26 @@ class TestBackwardCli:
         data = json.loads(capsys.readouterr().out)
         assert data["backward"] is None
         assert "error" in data
+
+    def test_backward_working_op_text(self, capsys):
+        """--backward for a differentiable op with known backward ops."""
+        assert main(["softmax.int", "--backward"]) == 0
+        out = capsys.readouterr().out
+        assert "backward" in out
+        assert "unique ops" in out
+        assert "total instances" in out
+
+    def test_backward_working_op_json(self, capsys):
+        """--backward --json for a differentiable op returns structured data."""
+        assert main(["softmax.int", "--backward", "--json"]) == 0
+        data = json.loads(capsys.readouterr().out)
+        assert len(data["backward"]) > 0
+        assert data["total_instances"] > 0
+        # Every backward entry has required fields
+        for entry in data["backward"]:
+            assert "op" in entry
+            assert "count" in entry
+            assert isinstance(entry["count"], int)
+            assert entry["count"] >= 1
+        # total_instances should equal sum of counts
+        assert data["total_instances"] == sum(e["count"] for e in data["backward"])
